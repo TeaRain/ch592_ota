@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create releases for missing tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for tag in $(git tag -l 'v*' --sort=-v:refname); do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "release $tag already exists"
+              continue
+            fi
+            echo "creating release $tag"
+            gh release create "$tag" --title "$tag" --generate-notes
+          done
