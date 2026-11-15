@@ -7,9 +7,17 @@ DOMAIN = "ch592_ota"
 CONF_FIRMWARE = "firmware"
 CONF_VERSION = "version"
 CONF_CHUNK = "chunk"
+CONF_MANIFEST = "manifest_url"
 
 DEFAULT_DEVICE_NAME = "CH592"
 DEFAULT_FIRMWARE = "www/firmware/ch592_ota.bin"
+
+# Firmware repository published by tools/publish_firmware.py.
+DEFAULT_MANIFEST_URL = (
+    "https://gitee.com/zigbridge/ch592-gas-broadcaster"
+    "/raw/master/firmware/manifest.json"
+)
+MANIFEST_UPDATE_INTERVAL_MINUTES = 30
 
 SERVICE_FLASH = "flash"
 SERVICE_ABORT = "abort"

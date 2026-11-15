@@ -21,6 +21,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .ble_ota import Ch592OtaClient, OtaMtuError
 from .bthome import parse_bthome_version
+from .firmware import FirmwareCloudCoordinator
 from .const import (
     CONF_FIRMWARE,
     CONF_VERSION,
@@ -59,6 +60,7 @@ class Ch592OtaCoordinator:
         self._task: asyncio.Task | None = None
         self._client: Ch592OtaClient | None = None
         self._requested_chunk: int | None = None
+        self.cloud: FirmwareCloudCoordinator | None = None
 
     # ------------------------------------------------------------- lifecycle
 
@@ -142,6 +144,8 @@ class Ch592OtaCoordinator:
         firmware: str | None = None,
         version: str | None = None,
         chunk: int | None = None,
+        image: bytes | None = None,
+        meta: dict[str, object] | None = None,
     ) -> dict[str, object]:
         if self._task is not None and not self._task.done():
             raise HomeAssistantError("已有 OTA 任务正在运行")
@@ -151,16 +155,21 @@ class Ch592OtaCoordinator:
                 raise HomeAssistantError("chunk 必须是 16~64 之间、16 的倍数")
         self._requested_chunk = chunk
 
-        path = self.resolve_firmware_path(firmware)
-        try:
-            image, meta = await self.hass.async_add_executor_job(
-                self._read_image, path
-            )
-        except OSError as err:
-            raise HomeAssistantError(f"无法读取固件 {path}: {err}") from err
+        if image is None:
+            path = self.resolve_firmware_path(firmware)
+            try:
+                image, meta = await self.hass.async_add_executor_job(
+                    self._read_image, path
+                )
+            except OSError as err:
+                raise HomeAssistantError(f"无法读取固件 {path}: {err}") from err
+            source = str(path)
+        else:
+            meta = meta or {}
+            source = "云端固件"
 
         if not image:
-            raise HomeAssistantError(f"固件文件为空: {path}")
+            raise HomeAssistantError(f"固件文件为空: {source}")
         if len(image) > IMAGE_SIZE - 16:
             raise HomeAssistantError(
                 f"固件过大: {len(image)} 字节，APP 区最多 {IMAGE_SIZE - 16} 字节"

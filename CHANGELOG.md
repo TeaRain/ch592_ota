@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+- 新增固件清单轮询（默认 30 分钟）：从 Gitee/GitHub 的固件仓库自动检查新版本
+- 有新固件时 `update.*` 实体自动提示；安装时直接下载镜像并校验
+  size / CRC32 / SHA-256，无需本地固件文件
+- 选项里可配置 `manifest_url`，留空关闭自动检查；拉取失败回退本地固件
+- `update.*` 的 `extra_state_attributes` 增加 upstream_version、manifest_error 等
+- 固件工程与镜像发布到 https://gitee.com/zigbridge/ch592-gas-broadcaster
+
 ## 0.1.2
 
 - 新增 HA 原生固件更新实体 `update.*`：设置 → 更新 / 设备页直接安装，带进度

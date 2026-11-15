@@ -21,6 +21,11 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .coordinator import Ch592OtaCoordinator
 from .entity import build_device_info
+from .firmware import (
+    async_download_firmware,
+    is_newer,
+    manifest_version,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,6 +56,7 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
         self._attr_unique_id = f"{self._address}_firmware_update"
         self._latest_version: str | None = None
         self._latest_meta: dict[str, object] = {}
+        self.cloud = coordinator.cloud
 
     # ------------------------------------------------------------ lifecycle
 
@@ -58,6 +64,8 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
         self.async_on_remove(
             self.coordinator.async_add_listener(self._handle_coordinator_update)
         )
+        if self.cloud is not None:
+            self.async_on_remove(self.cloud.async_add_listener(self._handle_cloud_update))
         await self._async_load_latest()
 
     # --------------------------------------------------------------- update API
@@ -77,13 +85,21 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
 
     @property
     def latest_version(self) -> str | None:
-        return self._latest_version or self.installed_version
+        cloud_version = manifest_version(self._cloud_manifest())
+        installed = self.installed_version
+        if is_newer(cloud_version, installed):
+            return cloud_version
+        return self._latest_version or installed
 
     @property
     def release_summary(self) -> str | None:
-        size = self._latest_meta.get("size")
-        crc = self._latest_meta.get("crc32")
+        manifest = self._cloud_manifest() or {}
+        notes = manifest.get("notes")
+        size = manifest.get("size") or self._latest_meta.get("size")
+        crc = manifest.get("crc32") or self._latest_meta.get("crc32")
         parts = []
+        if notes:
+            parts.append(str(notes))
         if size:
             parts.append(f"{int(size) // 1024} KiB")
         if crc:
@@ -91,11 +107,34 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
         parts.append("升级前请长按 B 键 3 秒进入 OTA 模式")
         return " · ".join(parts)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        manifest = self._cloud_manifest() or {}
+        error = getattr(self.cloud, "last_exception", None) if self.cloud else None
+        return {
+            "manifest_url": getattr(self.cloud, "url", None),
+            "upstream_version": manifest_version(manifest),
+            "firmware_notes": manifest.get("notes"),
+            "firmware_built": manifest.get("built"),
+            "manifest_error": str(error) if error else None,
+        }
+
     async def async_install(
         self, version: str | None = None, backup: bool = False
     ) -> None:
         """Start the OTA upload and wait for the device to come back."""
-        await self.coordinator.async_start_ota()
+        manifest = self._cloud_manifest()
+        cloud_version = manifest_version(manifest)
+        if manifest and is_newer(cloud_version, self.installed_version):
+            image = await async_download_firmware(self.hass, manifest)
+            await self.coordinator.async_start_ota(
+                version=version or cloud_version,
+                image=image,
+                meta=manifest,
+            )
+        else:
+            await self.coordinator.async_start_ota()
+
         task = self.coordinator.current_task
         if task is not None:
             await task
@@ -103,6 +142,11 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
             raise HomeAssistantError(
                 str(self.coordinator.data.get("error") or "OTA 升级失败")
             )
+
+    def _cloud_manifest(self) -> dict[str, object] | None:
+        if self.cloud is None or not isinstance(self.cloud.data, dict):
+            return None
+        return self.cloud.data
 
     # --------------------------------------------------------------- internals
 
@@ -121,6 +165,10 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
         else:
             self._latest_version = None
         self._latest_meta = meta
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_cloud_update(self) -> None:
         self.async_write_ha_state()
 
     @callback

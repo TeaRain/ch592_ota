@@ -20,11 +20,14 @@ from homeassistant.helpers import config_validation as cv
 from .const import (
     CONF_CHUNK,
     CONF_FIRMWARE,
+    CONF_MANIFEST,
     CONF_VERSION,
+    DEFAULT_MANIFEST_URL,
     DOMAIN,
     SERVICE_ABORT,
     SERVICE_FLASH,
 )
+from .firmware import FirmwareCloudCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +61,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _async_register_services(hass)
     coordinator = Ch592OtaCoordinator(hass, entry)
     entry.runtime_data = coordinator
+
+    manifest_url = str(
+        entry.options.get(CONF_MANIFEST, DEFAULT_MANIFEST_URL) or ""
+    ).strip()
+    if manifest_url:
+        coordinator.cloud = FirmwareCloudCoordinator(hass, manifest_url, entry)
+        # Refresh once, but don't block setup if the network is down.
+        await coordinator.cloud.async_refresh()
+
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await coordinator.async_start()
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

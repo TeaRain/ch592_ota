@@ -12,8 +12,10 @@ from homeassistant.core import callback
 
 from .const import (
     CONF_FIRMWARE,
+    CONF_MANIFEST,
     DEFAULT_DEVICE_NAME,
     DEFAULT_FIRMWARE,
+    DEFAULT_MANIFEST_URL,
     DOMAIN,
 )
 
@@ -77,6 +79,12 @@ class Ch592OtaOptionsFlow(config_entries.OptionsFlow):
                         CONF_FIRMWARE,
                         default=self.config_entry.options.get(
                             CONF_FIRMWARE, DEFAULT_FIRMWARE
+                        ),
+                    ): str,
+                    vol.Optional(
+                        CONF_MANIFEST,
+                        default=self.config_entry.options.get(
+                            CONF_MANIFEST, DEFAULT_MANIFEST_URL
                         ),
                     ): str,
                 }

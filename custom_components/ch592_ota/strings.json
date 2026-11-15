@@ -23,7 +23,8 @@
       "init": {
         "title": "CH592 OTA options",
         "data": {
-          "firmware": "Firmware path (under /config)"
+          "firmware": "Firmware path (under /config)",
+          "manifest_url": "Firmware manifest URL"
         }
       }
     }

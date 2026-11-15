@@ -3,9 +3,14 @@
   "name": "CH592 OTA",
   "codeowners": [],
   "config_flow": true,
-  "dependencies": ["bluetooth", "bluetooth_adapters"],
+  "dependencies": [
+    "bluetooth",
+    "bluetooth_adapters"
+  ],
   "documentation": "https://www.wch-ic.com/",
   "iot_class": "local_push",
-  "requirements": ["bleak-retry-connector>=3.0.0"],
-  "version": "0.1.2"
+  "requirements": [
+    "bleak-retry-connector>=3.0.0"
+  ],
+  "version": "0.2.0"
 }

@@ -86,12 +86,31 @@ GitHub：`https://github.com/TeaRain/ch592_ota.git`。
 `.bin.json` 由 `tools/make_ota_images.py`（见固件工程仓库/发行包）生成，包含
 `version`、`size`、`crc32`；集成用它决定最新版本和校验固件。
 
+### 固件自动检查（0.2.0）
+
+集成默认每 30 分钟拉取一次固件清单：
+
+```
+https://gitee.com/zigbridge/ch592-gas-broadcaster/raw/master/firmware/manifest.json
+```
+
+清单里有 `version`、`size`、`crc32`、`sha256`、`file`、`notes`。集成把它和设备
+通过 BTHome `0x53` 上报的版本比较，发现新版本时 `update.*` 实体自动变成
+“有更新”（`on`），点“安装”后集成直接下载镜像、校验大小/CRC32/SHA-256，再走 OTA，
+**不需要本地放固件文件**。
+
+- 修改清单地址：**设置 → 设备与服务 → CH592 OTA → 配置**，可换成 GitHub raw
+  或其他地址；留空则关闭自动检查。
+- 清单拉取失败时（例如仓库是私有），更新实体仍可用，`manifest_error` 属性会给出
+  原因，此时回退到本地 `.bin`。
+- 固件仓库：https://gitee.com/zigbridge/ch592-gas-broadcaster
+
 ## 升级
 
 1. 长按设备 B 键 **3 秒**，设备复位并广播 `GasMeter OTA`（服务 `0xFEE0`），
    此时 `binary_sensor.*_ota_mode` 变 `on`。
 2. 在 **设置 → 系统 → 更新**、设备页面，或仪表板卡片里点“安装”。
-3. 升级完成后设备自动重启，版本号变为 `.bin.json` 里的版本。
+3. 升级完成后设备自动重启，版本号变为新固件版本。
 
 也可以调用服务（需要临时换固件/版本/分片时）：
 
