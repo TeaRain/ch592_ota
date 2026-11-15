@@ -1,25 +1,19 @@
 # 燃气表 + OTA 一张卡片（复制到仪表板 → 编辑 → 添加卡片 → 手动/YAML）
 #
-# 0.1.2 起 OTA 实体已并入 BTHome 设备页，实体 ID 会跟着设备名走，
-# 上面的 update./sensor./button. 名字请以 设置 → 设备与服务 → 该设备 页面为准。
-# 默认设备名是 “BTHome sensor BC6F”，所以通常是：
-#   update.bthome_sensor_bc6f_firmware
-#   sensor.bthome_sensor_bc6f_ota_status
-#   sensor.bthome_sensor_bc6f_ota_progress
-#   binary_sensor.bthome_sensor_bc6f_ota_mode
-#   button.bthome_sensor_bc6f_abort_ota
+# 实体 ID 按这台设备当前注册的实际 ID 写；换设备/改过名字时请按
+# 设置 → 设备与服务 → 该设备 页面里的 ID 调整。
 
 type: vertical-stack
 cards:
   - type: tile
-    entity: update.bthome_sensor_bc6f_firmware
+    entity: update.ch592_firmware
     name: 固件
     icon: mdi:chip
     tap_action:
       action: perform-action
       perform_action: update.install
       target:
-        entity_id: update.bthome_sensor_bc6f_firmware
+        entity_id: update.ch592_firmware
       confirmation:
         text: 确认升级固件？请先长按 B 键 3 秒让设备进入 OTA 模式。
 
@@ -44,13 +38,15 @@ cards:
     title: OTA
     icon: mdi:update
     entities:
-      - entity: binary_sensor.bthome_sensor_bc6f_ota_mode
+      - entity: sensor.sheng_huo_yang_tai_ch592_firmware_version
+        name: 当前固件
+      - entity: binary_sensor.ch592_ota_mode
         name: OTA 模式
-      - entity: sensor.bthome_sensor_bc6f_ota_status
+      - entity: sensor.sheng_huo_yang_tai_ch592_ota_status
         name: 状态
-      - entity: sensor.bthome_sensor_bc6f_ota_progress
+      - entity: sensor.sheng_huo_yang_tai_ch592_ota_progress
         name: 进度
-      - entity: button.bthome_sensor_bc6f_check_for_updates
+      - entity: button.ch592_check_for_updates
         name: 立即检查更新
-      - entity: button.bthome_sensor_bc6f_abort_ota
+      - entity: button.ch592_abort_ota
         name: 取消升级
