@@ -1,0 +1,44 @@
+flash:
+  name: Flash firmware
+  description: Upload a WCH backup-OTA image to a CH592 device that is in OTA mode.
+  fields:
+    address:
+      name: Bluetooth address
+      description: Target device address. Optional when only one CH592 is configured.
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:
+    firmware:
+      name: Firmware file
+      description: Path under the Home Assistant config directory. Defaults to the configured path.
+      example: "www/firmware/ch592_ota.bin"
+      selector:
+        text:
+    version:
+      name: Expected version
+      description: Version string to wait for after reboot. Read from the .json sidecar when omitted.
+      example: "1.2.4"
+      selector:
+        text:
+    chunk:
+      name: Chunk size
+      description: >-
+        Data bytes per PROGRAM write. Must be a multiple of 16 between 16 and 64.
+        Leave empty to auto-pick from the MTU, then fall back to 64/32/16.
+      example: 32
+      selector:
+        number:
+          min: 16
+          max: 64
+          step: 16
+          mode: box
+abort:
+  name: Abort OTA
+  description: Cancel a running OTA upload and disconnect from the device.
+  fields:
+    address:
+      name: Bluetooth address
+      description: Target device address. Optional when only one CH592 is configured.
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:

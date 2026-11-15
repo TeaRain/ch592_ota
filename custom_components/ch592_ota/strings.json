@@ -1,0 +1,31 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CH592 OTA",
+        "description": "Configure the CH592 gas-meter broadcaster. Put the device into OTA mode by holding button B for 3 seconds before flashing.",
+        "data": {
+          "address": "Bluetooth address",
+          "name": "Device name",
+          "firmware": "Firmware path (under /config)"
+        }
+      }
+    },
+    "error": {
+      "invalid_address": "Invalid Bluetooth address, expected AA:BB:CC:DD:EE:FF"
+    },
+    "abort": {
+      "already_configured": "This device is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "CH592 OTA options",
+        "data": {
+          "firmware": "Firmware path (under /config)"
+        }
+      }
+    }
+  }
+}

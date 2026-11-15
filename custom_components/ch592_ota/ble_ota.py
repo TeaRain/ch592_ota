@@ -1,0 +1,294 @@
+"""WCH backup-OTA client for the CH592 gas-meter firmware.
+
+Protocol (service 0xFEE0, characteristic 0xFEE1):
+
+  INFO    [0x84, 0x00]                       -> 20-byte device info
+  ERASE   [0x81, 0x00, addr16_lo, addr16_hi, blocks_lo, blocks_hi]
+                                             -> 2-byte status when finished
+  PROGRAM [0x80, len, addr16_lo, addr16_hi, data...]
+                                             -> 2-byte status
+  VERIFY  [0x82, len, addr16_lo, addr16_hi, data...]
+                                             -> 2-byte status
+  END     [0x83, 0x00]                       -> device resets
+
+Addresses are expressed in 16-byte units and start at 0x1000 (Image A base).
+The OTA application adds IMAGE_A_SIZE (216 KiB) so writes land in Image B.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Callable
+
+from bleak import BleakClient
+from bleak.exc import BleakError
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
+from homeassistant.components.bluetooth import async_ble_device_from_address
+from homeassistant.core import HomeAssistant
+
+from .const import (
+    CMD_IAP_END,
+    CMD_IAP_ERASE,
+    CMD_IAP_INFO,
+    CMD_IAP_PROM,
+    CMD_IAP_VERIFY,
+    DEFAULT_CHUNK,
+    ERASE_TIMEOUT,
+    IMAGE_A_START,
+    IMAGE_SIZE,
+    MIN_CHUNK,
+    OTA_CHAR_UUID,
+    OTA_IMAGE_MAGIC,
+    OTA_STATUS_OK,
+    STATUS_TIMEOUT,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[int, str, int, int], None]
+
+
+class OtaError(Exception):
+    """Base OTA error."""
+
+
+class OtaMtuError(OtaError):
+    """A GATT write failed, possibly because the payload was too large."""
+
+
+def _le16(value: int) -> bytes:
+    return bytes((value & 0xFF, (value >> 8) & 0xFF))
+
+
+def _le32(data: bytes) -> int:
+    return int.from_bytes(data, "little")
+
+
+class Ch592OtaClient:
+    """Perform a WCH OTA upload over an existing BLE connection."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        address: str,
+        image: bytes,
+        progress_cb: ProgressCallback,
+    ) -> None:
+        if len(image) > IMAGE_SIZE - 16:
+            raise OtaError("固件超过 APP 区可用大小")
+        padded = bytearray(image)
+        padded.extend(b"\xFF" * (IMAGE_SIZE - 16 - len(padded)))
+        padded.extend(OTA_IMAGE_MAGIC.to_bytes(4, "little"))
+        padded.extend(b"\xFF" * 12)
+
+        self._hass = hass
+        self._address = address
+        self._image = bytes(padded)
+        self._progress = progress_cb
+        self._client: BleakClient | None = None
+        self._char = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._chunk = DEFAULT_CHUNK
+
+    # ------------------------------------------------------------------ public
+
+    async def async_run(self, chunk: int | None = None) -> None:
+        """Upload the image. Returns after the END command has been sent."""
+        self._loop = asyncio.get_running_loop()
+        self._notify(1, "connecting")
+
+        device = async_ble_device_from_address(
+            self._hass, self._address, connectable=True
+        )
+        if device is None:
+            raise OtaError(
+                "未找到可连接的设备。请长按 B 键 3 秒进入 OTA 模式，并确认蓝牙代理在线。"
+            )
+
+        try:
+            self._client = await establish_connection(
+                BleakClientWithServiceCache,
+                device,
+                self._address,
+                max_attempts=3,
+                timeout=30.0,
+            )
+            self._char = self._find_ota_char()
+            if chunk is not None and chunk % 16 == 0 and MIN_CHUNK <= chunk <= DEFAULT_CHUNK:
+                self._chunk = chunk
+            else:
+                self._chunk = self._pick_chunk()
+            mtu = self._get_mtu()
+            _LOGGER.debug(
+                "OTA connected to %s, mtu=%s, chunk=%s",
+                self._address,
+                mtu,
+                self._chunk,
+            )
+            self._notify(2, f"connected mtu={mtu} chunk={self._chunk}")
+
+            info = await self._async_info()
+            image_size = info["image_size"]
+            block_size = info["block_size"]
+            if image_size != IMAGE_SIZE:
+                raise OtaError(
+                    f"设备镜像区大小异常: {image_size} (期望 {IMAGE_SIZE})"
+                )
+
+            self._notify(6, "erasing")
+            await self._async_erase(image_size, block_size)
+
+            self._notify(10, "uploading", 0, len(self._image))
+            await self._async_program()
+
+            self._notify(86, "verifying", 0, len(self._image))
+            await self._async_verify()
+
+            self._notify(97, "rebooting")
+            await self._async_end()
+        finally:
+            self._char = None
+            if self._client is not None and self._client.is_connected:
+                try:
+                    await asyncio.wait_for(self._client.disconnect(), 10)
+                except (TimeoutError, BleakError, EOFError):
+                    pass
+
+    async def async_disconnect(self) -> None:
+        """Force a disconnect (used by abort)."""
+        if self._client is not None and self._client.is_connected:
+            try:
+                await asyncio.wait_for(self._client.disconnect(), 10)
+            except (TimeoutError, BleakError, EOFError):
+                pass
+
+    # ----------------------------------------------------------------- helpers
+
+    def _notify(self, percent: int, phase: str, done: int = 0, total: int = 0) -> None:
+        try:
+            self._progress(percent, phase, done, total)
+        except Exception:  # noqa: BLE001 - never let UI callbacks break the OTA
+            _LOGGER.exception("OTA progress callback failed")
+
+    def _find_ota_char(self):
+        assert self._client is not None
+        services = self._client.services
+        if services is None:
+            raise OtaError("未能发现 GATT 服务")
+        for service in services:
+            for char in service.characteristics:
+                if char.uuid.lower() == OTA_CHAR_UUID:
+                    return char
+        raise OtaError("设备上没有找到 OTA 特征值，请确认已进入 OTA 模式")
+
+    def _get_mtu(self) -> int:
+        assert self._client is not None
+        try:
+            mtu = int(self._client.mtu_size)
+        except (AttributeError, NotImplementedError, BleakError, OSError):
+            mtu = 247
+        return max(23, mtu)
+
+    def _pick_chunk(self) -> int:
+        usable = self._get_mtu() - 3 - 4  # ATT header + WCH command header
+        usable = max(MIN_CHUNK, (usable // 16) * 16)
+        return max(MIN_CHUNK, min(DEFAULT_CHUNK, usable))
+
+    async def _write(self, payload: bytes) -> None:
+        assert self._client is not None and self._char is not None
+        if not self._client.is_connected:
+            raise OtaError("蓝牙连接已断开")
+        try:
+            await self._client.write_gatt_char(self._char, payload, response=True)
+        except (BleakError, EOFError) as err:
+            raise OtaMtuError(f"写入失败: {err}") from err
+
+    async def _read_response(self, timeout: float) -> bytes:
+        assert self._client is not None and self._char is not None
+        assert self._loop is not None
+        deadline = self._loop.time() + timeout
+        while self._loop.time() < deadline:
+            try:
+                data = await self._client.read_gatt_char(self._char)
+            except (BleakError, EOFError, TimeoutError) as err:
+                raise OtaMtuError(f"读取失败/连接中断: {err}") from err
+            if data:
+                return bytes(data)
+            await asyncio.sleep(0.05)
+        raise OtaError("等待设备响应超时")
+
+    async def _read_status(self, timeout: float = STATUS_TIMEOUT) -> None:
+        response = await self._read_response(timeout)
+        if len(response) < 2:
+            raise OtaError(f"响应长度异常: {response.hex()}")
+        if response[0] != OTA_STATUS_OK:
+            raise OtaError(f"设备返回错误状态 0x{response[0]:02X}")
+
+    # --------------------------------------------------------------- commands
+
+    async def _async_info(self) -> dict[str, int]:
+        await self._write(bytes((CMD_IAP_INFO, 0)))
+        response = await self._read_response(STATUS_TIMEOUT)
+        if len(response) < 9:
+            raise OtaError(f"设备信息响应异常: {response.hex()}")
+        info = {
+            "image_flag": response[0],
+            "image_size": _le32(response[1:5]),
+            "block_size": int.from_bytes(response[5:7], "little"),
+            "chip_id": int.from_bytes(response[7:9], "little"),
+        }
+        _LOGGER.debug("OTA info: %s", info)
+        return info
+
+    async def _async_erase(self, image_size: int, block_size: int) -> None:
+        if block_size <= 0:
+            raise OtaError("设备返回的 Flash 块大小无效")
+        blocks = (image_size + block_size - 1) // block_size
+        addr16 = IMAGE_A_START >> 4
+        payload = bytes((CMD_IAP_ERASE, 0)) + _le16(addr16) + _le16(blocks)
+        await self._write(payload)
+        await self._read_status(ERASE_TIMEOUT)
+        _LOGGER.debug("OTA erased %s blocks of %s bytes", blocks, block_size)
+
+    async def _async_program(self) -> None:
+        total = len(self._image)
+        for offset in range(0, total, self._chunk):
+            data = self._image[offset : offset + self._chunk]
+            if len(data) % 4:
+                data += b"\xFF" * (4 - len(data) % 4)
+            addr16 = (IMAGE_A_START + offset) >> 4
+            payload = (
+                bytes((CMD_IAP_PROM, len(data))) + _le16(addr16) + data
+            )
+            await self._write(payload)
+            await self._read_status()
+            done = min(offset + len(data), total)
+            percent = 10 + (done * 75) // total
+            self._notify(percent, "uploading", done, total)
+
+    async def _async_verify(self) -> None:
+        total = len(self._image)
+        for offset in range(0, total, self._chunk):
+            data = self._image[offset : offset + self._chunk]
+            if len(data) % 4:
+                data += b"\xFF" * (4 - len(data) % 4)
+            addr16 = (IMAGE_A_START + offset) >> 4
+            payload = (
+                bytes((CMD_IAP_VERIFY, len(data))) + _le16(addr16) + data
+            )
+            await self._write(payload)
+            await self._read_status(ERASE_TIMEOUT)
+            done = min(offset + len(data), total)
+            percent = 86 + (done * 10) // total
+            self._notify(percent, "verifying", done, total)
+
+    async def _async_end(self) -> None:
+        assert self._client is not None and self._char is not None
+        try:
+            await self._client.write_gatt_char(
+                self._char, bytes((CMD_IAP_END, 0)), response=True
+            )
+        except (BleakError, EOFError):
+            # The device resets immediately after CMD_IAP_END.
+            pass

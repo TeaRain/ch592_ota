@@ -1,0 +1,54 @@
+# 燃气表 + OTA 一张卡片（复制到仪表板 → 编辑 → 添加卡片 → 手动/YAML）
+#
+# 0.1.2 起 OTA 实体已并入 BTHome 设备页，实体 ID 会跟着设备名走，
+# 上面的 update./sensor./button. 名字请以 设置 → 设备与服务 → 该设备 页面为准。
+# 默认设备名是 “BTHome sensor BC6F”，所以通常是：
+#   update.bthome_sensor_bc6f_firmware
+#   sensor.bthome_sensor_bc6f_ota_status
+#   sensor.bthome_sensor_bc6f_ota_progress
+#   binary_sensor.bthome_sensor_bc6f_ota_mode
+#   button.bthome_sensor_bc6f_abort_ota
+
+type: vertical-stack
+cards:
+  - type: tile
+    entity: update.bthome_sensor_bc6f_firmware
+    name: 固件
+    icon: mdi:chip
+    tap_action:
+      action: perform-action
+      perform_action: update.install
+      target:
+        entity_id: update.bthome_sensor_bc6f_firmware
+      confirmation:
+        text: 确认升级固件？请先长按 B 键 3 秒让设备进入 OTA 模式。
+
+  - type: grid
+    columns: 3
+    square: false
+    cards:
+      - type: tile
+        entity: sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_gas
+        name: 燃气
+        icon: mdi:fire
+      - type: tile
+        entity: sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_battery
+        name: 电量
+        icon: mdi:battery
+      - type: tile
+        entity: sensor.bthome_sensor_bc6f_signal_strength
+        name: 信号
+        icon: mdi:signal
+
+  - type: entities
+    title: OTA
+    icon: mdi:update
+    entities:
+      - entity: binary_sensor.bthome_sensor_bc6f_ota_mode
+        name: OTA 模式
+      - entity: sensor.bthome_sensor_bc6f_ota_status
+        name: 状态
+      - entity: sensor.bthome_sensor_bc6f_ota_progress
+        name: 进度
+      - entity: button.bthome_sensor_bc6f_abort_ota
+        name: 取消升级
