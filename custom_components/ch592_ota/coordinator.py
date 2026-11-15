@@ -118,23 +118,28 @@ class Ch592OtaCoordinator:
         self.data["last_uuids"] = list(service_info.service_uuids)[:6]
         self.data["last_data_uuids"] = list(service_info.service_data)[:6]
 
-        version = parse_bthome_version(service_info)
-        if version is not None:
-            self.data["firmware_version"] = version
-            self.data["ads"] = int(self.data["ads"]) + 1
-            self.data["last_seen"] = datetime.now(UTC)
-            self.data["ota_mode"] = False
-            self._notify()
-
-        elif not self.data["ota_mode"] and self._is_ota_advertisement(service_info):
-            _LOGGER.info(
-                "检测到 OTA 广播 (name=%s, uuids=%s)",
-                service_info.name,
-                list(service_info.service_uuids),
-            )
-            self.data["ota_mode"] = True
-            self._notify()
-            self._maybe_auto_install()
+        # The OTA advertisement is the authoritative signal (it is the only one
+        # carrying 0xFEE0) and must be checked before the BTHome parser: HA can
+        # report a BTHome payload for the same address, and the cached device
+        # name is "GasMeter OTA" in both modes, so the name proves nothing.
+        if self._is_ota_advertisement(service_info):
+            if not self.data["ota_mode"]:
+                _LOGGER.info(
+                    "检测到 OTA 广播 (uuids=%s data=%s)",
+                    list(service_info.service_uuids),
+                    list(service_info.service_data),
+                )
+                self.data["ota_mode"] = True
+                self._notify()
+                self._maybe_auto_install()
+        else:
+            version = parse_bthome_version(service_info)
+            if version is not None:
+                self.data["firmware_version"] = version
+                self.data["ads"] = int(self.data["ads"]) + 1
+                self.data["last_seen"] = datetime.now(UTC)
+                self.data["ota_mode"] = False
+                self._notify()
 
         # Throttled refresh so the diagnostic attributes stay current.
         now = asyncio.get_running_loop().time()
@@ -144,15 +149,12 @@ class Ch592OtaCoordinator:
 
     @staticmethod
     def _is_ota_advertisement(service_info: BluetoothServiceInfoBleak) -> bool:
-        """Recognise the OTA firmware advertisement.
+        """Recognise the OTA firmware advertisement by its 0xFEE0 service.
 
-        The advertisement carries 0xFEE0 (and 0xFFE0), but the name from the
-        scan response is checked too so detection does not depend on the proxy
-        reporting the UUID list.
+        The device name is deliberately not used: HA caches "GasMeter OTA" for
+        this address after the first OTA session, so normal BTHome broadcasts
+        report that name too.
         """
-        name = (service_info.name or "").strip()
-        if "ota" in name.lower():
-            return True
         if any(u.lower() == OTA_SERVICE_UUID for u in service_info.service_uuids):
             return True
         return any(
@@ -173,34 +175,37 @@ class Ch592OtaCoordinator:
         """Start the OTA as soon as the device advertises OTA mode.
 
         This is what makes "hold B for 3 s" enough: no button press in HA.
+        Every skip reason is recorded in ``auto_note`` so the decision is
+        visible on ``binary_sensor.*_ota_mode`` instead of only in the log.
         """
+        def skip(reason: str) -> None:
+            self.data["auto_note"] = reason
+            _LOGGER.info("自动升级未启动: %s", reason)
+            self._notify()
+
         if not self.auto_install:
-            return
+            return skip("选项 auto_install_on_ota_mode 已关闭")
         if self._task is not None and not self._task.done():
-            return
+            return skip("已有升级任务在运行")
         if self._auto_task is not None and not self._auto_task.done():
-            return
+            return skip("自动升级已在运行")
 
         manifest = self.cloud.data if self.cloud else None
         if not isinstance(manifest, dict):
-            _LOGGER.debug("OTA 模式已进入，但没有固件清单，跳过自动升级")
-            return
+            return skip("没有可用的固件清单")
         version = manifest_version(manifest)
         installed = self.data.get("firmware_version")
         installed_str = str(installed) if installed else None
         if not is_newer(version, installed_str):
-            _LOGGER.debug(
-                "OTA 模式已进入，但没有新固件 (设备 %s, 最新 %s)",
-                installed_str,
-                version,
-            )
-            return
+            return skip(f"没有新固件（设备 {installed_str}，最新 {version}）")
 
+        self.data["auto_note"] = f"开始自动升级到 {version}"
         _LOGGER.info(
             "检测到 OTA 模式且有新固件 %s（当前 %s），自动开始升级",
             version,
             installed_str,
         )
+        self._notify()
         self._auto_task = self.hass.async_create_task(
             self._async_auto_install(manifest, version)
         )

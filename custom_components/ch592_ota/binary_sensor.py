@@ -57,6 +57,7 @@ class Ch592OtaModeSensor(BinarySensorEntity):
         """Diagnostics: which advertisements this integration actually sees."""
         last_seen = self.coordinator.last_seen
         return {
+            "auto_note": self.coordinator.data.get("auto_note"),
             "ads_total": self.coordinator.data.get("ads_total", 0),
             "last_name": self.coordinator.data.get("last_name"),
             "last_service_uuids": self.coordinator.data.get("last_uuids"),
