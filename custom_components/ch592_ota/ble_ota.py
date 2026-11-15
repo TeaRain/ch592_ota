@@ -369,7 +369,10 @@ class Ch592OtaClient:
             # Acknowledged write: the ATT response is only produced after the
             # device has compared the chunk, so the status read cannot be stale.
             await self._write(payload)
-            await self._read_status(ERASE_TIMEOUT)
+            try:
+                await self._read_status(ERASE_TIMEOUT)
+            except OtaError as err:
+                raise OtaError(f"校验失败 @0x{offset:05X}: {err}") from err
             done = min(offset + len(data), total)
             percent = 86 + (done * 10) // total
             self._notify(percent, "verifying", done, total)

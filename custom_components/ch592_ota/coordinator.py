@@ -437,7 +437,11 @@ class Ch592OtaCoordinator:
             raise
         except Exception as err:  # noqa: BLE001 - report every failure to the user
             _LOGGER.exception("CH592 OTA 失败")
-            self.data.update(status="failed", phase="failed", error=str(err))
+            message = str(err)
+            lowered = message.lower()
+            if "connect" in lowered or "未找到可连接" in message:
+                message += "（设备已退出 OTA 模式，请重新长按 B 键 3 秒后重试）"
+            self.data.update(status="failed", phase="failed", error=message)
             self._notify()
         finally:
             self._client = None

@@ -56,10 +56,10 @@ OTA_STATUS_BAD_ADDRESS = 0xFF
 DEFAULT_CHUNK = 64
 MIN_CHUNK = 16
 # PROGRAM accepts unacknowledged writes; the status is read once per window.
-# VERIFY only compares RAM against flash, so it is not bound by the 256-byte
-# page limit that forces small PROGRAM chunks.
+# VERIFY uses the same FLASH_ROM_* page machinery as PROGRAM, so it keeps the
+# page-safe 64-byte chunk: 240-byte VERIFY writes stall the transfer.
 PROGRAM_STATUS_WINDOW = 32
-VERIFY_CHUNK_MAX = 240
+VERIFY_CHUNK_MAX = 64
 # Largest PROGRAM payload the device can take once it reports page splitting
 # (firmware >= 1.2.9); a single-command length field is one byte.
 OTA_CHUNK_MAX = 240
