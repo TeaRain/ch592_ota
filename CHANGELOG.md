@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.3
+
+- `sensor.*_ota_status` 增加三个实测属性：`chunk`（本次实际分片）、
+  `vdd_mv`（设备在 OTA 模式测到的电压）、`duration_s`（本次升级总耗时），
+  另加 `mtu`、`verify_chunk`、`device_protocol`
+- 这些属性在每次升级开始时重置，升级结束后保留，方便对照记录
+
 ## 0.4.2
 
 - PROGRAM 分片上限 240 → **128**。ESPHome 代理对超过 128 字节的写入会退化成

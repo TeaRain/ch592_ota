@@ -70,6 +70,7 @@ class Ch592OtaCoordinator:
         self.cloud: FirmwareCloudCoordinator | None = None
         self._auto_task: asyncio.Task | None = None
         self._last_diag_notify = 0.0
+        self._run_started: float | None = None
 
     # ------------------------------------------------------------- lifecycle
 
@@ -318,6 +319,7 @@ class Ch592OtaCoordinator:
             )
 
         target = version or meta.get(CONF_VERSION) or None
+        self._run_started = asyncio.get_running_loop().time()
         self.data.update(
             status="starting",
             phase="starting",
@@ -325,6 +327,7 @@ class Ch592OtaCoordinator:
             uploaded=0,
             total=len(image),
             error=None,
+            duration_s=None,
         )
         self._notify()
 
@@ -372,9 +375,12 @@ class Ch592OtaCoordinator:
 
     @callback
     def _on_ota_info(self, info: dict[str, object]) -> None:
-        """Device INFO response: supply voltage measured in OTA mode."""
+        """Device INFO response: voltage, protocol and the negotiated chunks."""
         self.data["vdd"] = info.get("vdd") or None
         self.data["protocol"] = info.get("protocol")
+        self.data["chunk"] = info.get("chunk")
+        self.data["verify_chunk"] = info.get("verify_chunk")
+        self.data["mtu"] = info.get("mtu")
         self._notify()
 
     def _on_progress(
@@ -455,6 +461,11 @@ class Ch592OtaCoordinator:
             self.data.update(status="failed", phase="failed", error=message)
             self._notify()
         finally:
+            if self._run_started is not None:
+                self.data["duration_s"] = round(
+                    asyncio.get_running_loop().time() - self._run_started, 1
+                )
+                self._run_started = None
             self._client = None
             self._task = None
             self._notify()

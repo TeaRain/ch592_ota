@@ -143,11 +143,6 @@ class Ch592OtaClient:
 
             info = await self._async_info()
             self.vdd_mv = info.get("vdd") or None
-            if self._info_cb is not None:
-                try:
-                    self._info_cb(info)
-                except Exception:  # noqa: BLE001 - diagnostics must never abort
-                    _LOGGER.exception("OTA info callback failed")
             # Only firmware that splits PROGRAM writes at flash pages can take
             # chunks larger than the 256-byte page limit safely.
             if requested is None:
@@ -155,6 +150,18 @@ class Ch592OtaClient:
                     self._chunk = min(OTA_CHUNK_MAX, self._pick_chunk_max())
                 else:
                     self._chunk = self._pick_chunk()
+            if self._info_cb is not None:
+                try:
+                    self._info_cb(
+                        {
+                            **info,
+                            "chunk": self._chunk,
+                            "verify_chunk": self._verify_chunk,
+                            "mtu": mtu,
+                        }
+                    )
+                except Exception:  # noqa: BLE001 - diagnostics must never abort
+                    _LOGGER.exception("OTA info callback failed")
             _LOGGER.debug(
                 "OTA connected to %s, mtu=%s, chunk=%s verify_chunk=%s "
                 "features=0x%02X proto=%s",
