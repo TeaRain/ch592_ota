@@ -53,6 +53,9 @@ rm -rf /tmp/ch592_ota_repo
 解压后把 `custom_components/ch592_ota` 复制到 `/config/custom_components/`。
 
 > HACS 的自定义仓库目前只支持 GitHub 仓库，Gitee 仓库需要手动安装/更新。
+>
+> 如果仓库是**私有**的，HTTPS clone 需要填 Gitee 用户名和私人令牌；想让 HA 里
+> 免密更新，请在 Gitee 仓库的“管理 → 仓库设置”里把仓库设为公开。
 
 ## 配置
 
