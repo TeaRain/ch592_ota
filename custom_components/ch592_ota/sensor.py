@@ -107,6 +107,8 @@ class Ch592OtaStatusSensor(Ch592OtaEntity):
             "ota_mode": self.coordinator.data.get("ota_mode"),
             # Supply voltage measured by the device in OTA mode (firmware >= 1.3.0).
             "vdd_mv": self.coordinator.data.get("vdd"),
+            # Lowest value seen during the upload (fresh coin cell sags under load).
+            "vdd_min_mv": self.coordinator.data.get("vdd_min"),
             "device_protocol": self.coordinator.data.get("protocol"),
             "mtu": self.coordinator.data.get("mtu"),
             "chunk": self.coordinator.data.get("chunk"),

@@ -376,11 +376,14 @@ class Ch592OtaCoordinator:
     @callback
     def _on_ota_info(self, info: dict[str, object]) -> None:
         """Device INFO response: voltage, protocol and the negotiated chunks."""
-        self.data["vdd"] = info.get("vdd") or None
-        self.data["protocol"] = info.get("protocol")
-        self.data["chunk"] = info.get("chunk")
-        self.data["verify_chunk"] = info.get("verify_chunk")
-        self.data["mtu"] = info.get("mtu")
+        if info.get("vdd"):
+            self.data["vdd"] = info["vdd"]
+            self.data["vdd_min"] = info.get("vdd_min") or info["vdd"]
+        if info.get("protocol"):
+            self.data["protocol"] = info["protocol"]
+        for key in ("chunk", "verify_chunk", "mtu"):
+            if info.get(key) is not None:
+                self.data[key] = info[key]
         self._notify()
 
     def _on_progress(

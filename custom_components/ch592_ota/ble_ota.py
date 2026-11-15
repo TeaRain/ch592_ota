@@ -47,6 +47,7 @@ from .const import (
     OTA_STATUS_OK,
     PROGRAM_STATUS_WINDOW,
     STATUS_TIMEOUT,
+    VDD_SAMPLE_WINDOWS,
     VERIFY_CHUNK_MAX,
     CMD_IAP_CRC32,
 )
@@ -105,6 +106,8 @@ class Ch592OtaClient:
         self._no_rsp_ok = True
         # Filled in from the device INFO response (None when unavailable).
         self.vdd_mv: int | None = None
+        self.vdd_min: int | None = None
+        self._features = 0
 
     # ------------------------------------------------------------------ public
 
@@ -142,7 +145,9 @@ class Ch592OtaClient:
             mtu = self._get_mtu()
 
             info = await self._async_info()
+            self._features = int(info.get("features", 0))
             self.vdd_mv = info.get("vdd") or None
+            self.vdd_min = self.vdd_mv
             # Only firmware that splits PROGRAM writes at flash pages can take
             # chunks larger than the 256-byte page limit safely.
             if requested is None:
@@ -369,6 +374,7 @@ class Ch592OtaClient:
         total = len(self._image)
         chunk = self._chunk
         pending = 0
+        windows = 0
         for offset in range(0, total, chunk):
             data = self._image[offset : offset + chunk]
             if len(data) % 4:
@@ -383,8 +389,32 @@ class Ch592OtaClient:
             if pending >= PROGRAM_STATUS_WINDOW or done >= total:
                 await self._read_status()
                 pending = 0
+                windows += 1
+                if self._features & OTA_FEATURE_CRC32 and (
+                    windows % VDD_SAMPLE_WINDOWS == 0 or done >= total
+                ):
+                    await self._sample_vdd()
             percent = 10 + (done * 75) // total
             self._notify(percent, "uploading", done, total)
+
+    async def _sample_vdd(self) -> None:
+        """Re-read INFO so the supply voltage stays live during the upload."""
+        try:
+            info = await self._async_info()
+        except OtaError as err:
+            # Diagnostics only: never abort an upload because of this.
+            _LOGGER.debug("读取设备电压失败: %s", err)
+            return
+        vdd = info.get("vdd") or 0
+        if not vdd:
+            return
+        self.vdd_mv = vdd
+        self.vdd_min = vdd if self.vdd_min is None else min(self.vdd_min, vdd)
+        if self._info_cb is not None:
+            try:
+                self._info_cb({"vdd": vdd, "vdd_min": self.vdd_min})
+            except Exception:  # noqa: BLE001 - diagnostics must never abort
+                _LOGGER.exception("OTA info callback failed")
 
     async def _async_crc32_verify(self) -> None:
         """Ask the device for the CRC32 of Image B — one round trip.

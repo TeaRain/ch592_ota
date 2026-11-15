@@ -61,6 +61,9 @@ MIN_CHUNK = 16
 # page-safe 64-byte chunk: 240-byte VERIFY writes stall the transfer.
 PROGRAM_STATUS_WINDOW = 32
 VERIFY_CHUNK_MAX = 64
+# Re-read the device INFO (which carries the supply voltage) every N status
+# windows while uploading, so the voltage trace is visible during the transfer.
+VDD_SAMPLE_WINDOWS = 4
 # Largest PROGRAM payload the device can take once it reports page splitting
 # (firmware >= 1.2.9); a single-command length field is one byte.
 # Capped at 128 on purpose: the ESPHome proxy turns writes above that into
