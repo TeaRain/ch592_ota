@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.2
+
+- 修复 HA 2026.11 下集成无法加载：`CONNECTION_BLUETOOTH` 应从
+  `homeassistant.helpers.device_registry` 导入（`homeassistant.const` 里没有），
+  之前导致 `entity.py` ImportError、所有平台加载失败
+
 ## 0.2.1
 
 - 新增 `button.*_check_for_updates`：立即拉取固件清单，不用等 30 分钟定时

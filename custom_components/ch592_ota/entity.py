@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from homeassistant.const import CONNECTION_BLUETOOTH
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 
 from .coordinator import Ch592OtaCoordinator
 
