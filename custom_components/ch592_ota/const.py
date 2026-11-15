@@ -55,6 +55,11 @@ OTA_STATUS_BAD_ADDRESS = 0xFF
 # Practical limits.
 DEFAULT_CHUNK = 64
 MIN_CHUNK = 16
+# PROGRAM accepts unacknowledged writes; the status is read once per window.
+# VERIFY only compares RAM against flash, so it is not bound by the 256-byte
+# page limit that forces small PROGRAM chunks.
+PROGRAM_STATUS_WINDOW = 32
+VERIFY_CHUNK_MAX = 240
 ERASE_TIMEOUT = 60
 STATUS_TIMEOUT = 20
 REBOOT_TIMEOUT = 180

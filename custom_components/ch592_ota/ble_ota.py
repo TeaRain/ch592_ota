@@ -41,7 +41,9 @@ from .const import (
     OTA_CHAR_UUID,
     OTA_IMAGE_MAGIC,
     OTA_STATUS_OK,
+    PROGRAM_STATUS_WINDOW,
     STATUS_TIMEOUT,
+    VERIFY_CHUNK_MAX,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,6 +92,10 @@ class Ch592OtaClient:
         self._char = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._chunk = DEFAULT_CHUNK
+        self._verify_chunk = VERIFY_CHUNK_MAX
+        # Whether unacknowledged writes still work; disabled permanently once
+        # the proxy/stack rejects one.
+        self._no_rsp_ok = True
 
     # ------------------------------------------------------------------ public
 
@@ -119,14 +125,20 @@ class Ch592OtaClient:
                 self._chunk = chunk
             else:
                 self._chunk = self._pick_chunk()
+            self._verify_chunk = min(VERIFY_CHUNK_MAX, self._pick_chunk_max())
             mtu = self._get_mtu()
             _LOGGER.debug(
-                "OTA connected to %s, mtu=%s, chunk=%s",
+                "OTA connected to %s, mtu=%s, chunk=%s verify_chunk=%s",
                 self._address,
                 mtu,
                 self._chunk,
+                self._verify_chunk,
             )
-            self._notify(2, f"connected mtu={mtu} chunk={self._chunk}")
+            self._notify(
+                2,
+                f"connected mtu={mtu} chunk={self._chunk} "
+                f"verify={self._verify_chunk}",
+            )
 
             info = await self._async_info()
             image_size = info["image_size"]
@@ -190,15 +202,37 @@ class Ch592OtaClient:
             mtu = 247
         return max(23, mtu)
 
-    def _pick_chunk(self) -> int:
+    def _pick_chunk_max(self) -> int:
+        """Largest payload the link can carry (ATT MTU - headers), 16-aligned."""
         usable = self._get_mtu() - 3 - 4  # ATT header + WCH command header
-        usable = max(MIN_CHUNK, (usable // 16) * 16)
-        return max(MIN_CHUNK, min(DEFAULT_CHUNK, usable))
+        return max(MIN_CHUNK, (usable // 16) * 16)
 
-    async def _write(self, payload: bytes) -> None:
+    def _pick_chunk(self) -> int:
+        return max(MIN_CHUNK, min(DEFAULT_CHUNK, self._pick_chunk_max()))
+
+    async def _write(self, payload: bytes, response: bool = True) -> None:
+        """Write one ATT packet.
+
+        ``response=False`` is used for the bulk PROGRAM phase: it saves one
+        round trip per chunk, and the device still processes the write before
+        the next one arrives (GATT writes are serialised in the stack). If the
+        proxy or stack refuses unacknowledged writes we fall back to the
+        acknowledged form for the rest of the upload.
+        """
         assert self._client is not None and self._char is not None
         if not self._client.is_connected:
             raise OtaError("蓝牙连接已断开")
+        use_response = response or not self._no_rsp_ok
+        try:
+            await self._client.write_gatt_char(
+                self._char, payload, response=use_response
+            )
+            return
+        except (BleakError, EOFError) as err:
+            if use_response:
+                raise OtaMtuError(f"写入失败: {err}") from err
+            _LOGGER.debug("无响应写入被拒绝，后续改用带响应写入: %s", err)
+            self._no_rsp_ok = False
         try:
             await self._client.write_gatt_char(self._char, payload, response=True)
         except (BleakError, EOFError) as err:
@@ -218,12 +252,27 @@ class Ch592OtaClient:
             await asyncio.sleep(0.05)
         raise OtaError("等待设备响应超时")
 
-    async def _read_status(self, timeout: float = STATUS_TIMEOUT) -> None:
-        response = await self._read_response(timeout)
-        if len(response) < 2:
-            raise OtaError(f"响应长度异常: {response.hex()}")
-        if response[0] != OTA_STATUS_OK:
-            raise OtaError(f"设备返回错误状态 0x{response[0]:02X}")
+    async def _read_status(
+        self, timeout: float = STATUS_TIMEOUT, retries: int = 2
+    ) -> None:
+        """Read the 2-byte command status, tolerating a transient read error."""
+        last_error: Exception | None = None
+        for attempt in range(retries + 1):
+            if attempt:
+                # Give a sagging coin cell a moment to recover.
+                await asyncio.sleep(0.2 * attempt)
+            try:
+                response = await self._read_response(timeout)
+            except OtaMtuError as err:
+                last_error = err
+                _LOGGER.debug("状态读取失败（第 %s 次）: %s", attempt + 1, err)
+                continue
+            if len(response) < 2:
+                raise OtaError(f"响应长度异常: {response.hex()}")
+            if response[0] != OTA_STATUS_OK:
+                raise OtaError(f"设备返回错误状态 0x{response[0]:02X}")
+            return
+        raise last_error or OtaError("读取设备状态失败")
 
     # --------------------------------------------------------------- commands
 
@@ -252,31 +301,53 @@ class Ch592OtaClient:
         _LOGGER.debug("OTA erased %s blocks of %s bytes", blocks, block_size)
 
     async def _async_program(self) -> None:
+        """Stream the image.
+
+        Each chunk is written without waiting for an ATT response and the
+        status is only read once per ``PROGRAM_STATUS_WINDOW`` chunks — the
+        device serialises GATT writes, so ordering is preserved and a missed
+        flash write is still caught by the VERIFY pass.
+        """
         total = len(self._image)
-        for offset in range(0, total, self._chunk):
-            data = self._image[offset : offset + self._chunk]
+        chunk = self._chunk
+        pending = 0
+        for offset in range(0, total, chunk):
+            data = self._image[offset : offset + chunk]
             if len(data) % 4:
                 data += b"\xFF" * (4 - len(data) % 4)
             addr16 = (IMAGE_A_START + offset) >> 4
             payload = (
                 bytes((CMD_IAP_PROM, len(data))) + _le16(addr16) + data
             )
-            await self._write(payload)
-            await self._read_status()
+            await self._write(payload, response=False)
+            pending += 1
             done = min(offset + len(data), total)
+            if pending >= PROGRAM_STATUS_WINDOW or done >= total:
+                await self._read_status()
+                pending = 0
             percent = 10 + (done * 75) // total
             self._notify(percent, "uploading", done, total)
 
     async def _async_verify(self) -> None:
+        """Read the written image back and compare it.
+
+        VERIFY only compares RAM against flash, so it is not limited by the
+        256-byte page constraint and can use much larger chunks. The status is
+        read after every chunk: a mismatch must never be masked by the next
+        chunk's status.
+        """
         total = len(self._image)
-        for offset in range(0, total, self._chunk):
-            data = self._image[offset : offset + self._chunk]
+        chunk = max(MIN_CHUNK, min(self._verify_chunk, self._pick_chunk_max()))
+        for offset in range(0, total, chunk):
+            data = self._image[offset : offset + chunk]
             if len(data) % 4:
                 data += b"\xFF" * (4 - len(data) % 4)
             addr16 = (IMAGE_A_START + offset) >> 4
             payload = (
                 bytes((CMD_IAP_VERIFY, len(data))) + _le16(addr16) + data
             )
+            # Acknowledged write: the ATT response is only produced after the
+            # device has compared the chunk, so the status read cannot be stale.
             await self._write(payload)
             await self._read_status(ERASE_TIMEOUT)
             done = min(offset + len(data), total)
