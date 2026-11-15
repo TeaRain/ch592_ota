@@ -5,6 +5,7 @@ from __future__ import annotations
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -18,7 +19,47 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: Ch592OtaCoordinator = entry.runtime_data
-    async_add_entities([Ch592OtaAbortButton(coordinator)])
+    async_add_entities(
+        [Ch592FirmwareCheckButton(coordinator), Ch592OtaAbortButton(coordinator)]
+    )
+
+
+class Ch592FirmwareCheckButton(ButtonEntity):
+    """Check the firmware manifest right now instead of waiting for the timer."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Check for updates"
+    _attr_icon = "mdi:cloud-refresh"
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: Ch592OtaCoordinator) -> None:
+        self.coordinator = coordinator
+        self._address = coordinator.address
+        self._attr_unique_id = f"{self._address}_check_firmware_update"
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            self.coordinator.async_add_listener(self.async_write_ha_state)
+        )
+
+    @property
+    def device_info(self):
+        return build_device_info(self.coordinator)
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.cloud is not None
+
+    async def async_press(self) -> None:
+        cloud = self.coordinator.cloud
+        if cloud is None:
+            raise HomeAssistantError("未启用固件清单检查")
+        await cloud.async_refresh()
+        if not cloud.last_update_success:
+            raise HomeAssistantError(
+                f"检查固件失败: {cloud.last_exception or '未知错误'}"
+            )
 
 
 class Ch592OtaAbortButton(ButtonEntity):

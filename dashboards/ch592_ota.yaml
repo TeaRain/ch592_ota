@@ -50,5 +50,7 @@ cards:
         name: 状态
       - entity: sensor.bthome_sensor_bc6f_ota_progress
         name: 进度
+      - entity: button.bthome_sensor_bc6f_check_for_updates
+        name: 立即检查更新
       - entity: button.bthome_sensor_bc6f_abort_ota
         name: 取消升级

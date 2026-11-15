@@ -100,7 +100,9 @@ https://gitee.com/zigbridge/ch592-gas-broadcaster/raw/master/firmware/manifest.j
 **不需要本地放固件文件**。
 
 - 修改清单地址：**设置 → 设备与服务 → CH592 OTA → 配置**，可换成 GitHub raw
-  或其他地址；留空则关闭自动检查。
+  或其他地址；留空则按 Gitee → GitHub 自动尝试。
+- 想立刻检查：按设备页的 **Check for updates** 按钮
+  （`button.*_check_for_updates`），不用等 30 分钟的定时器。
 - 清单拉取失败时（例如仓库是私有），更新实体仍可用，`manifest_error` 属性会给出
   原因，此时回退到本地 `.bin`。
 - 固件仓库：https://gitee.com/zigbridge/ch592-gas-broadcaster
@@ -134,6 +136,7 @@ data:
 | `sensor.<device>_ota_progress` | 上传进度 0–100 % |
 | `sensor.<device>_firmware_version` | BTHome `0x53` 报告的固件版本 |
 | `button.<device>_abort_ota` | 取消升级 |
+| `button.<device>_check_for_updates` | 立即检查固件清单（不用等 30 分钟） |
 
 `<device>` 跟随设备名，实体 ID 以设备页面实际生成结果为准。
 
