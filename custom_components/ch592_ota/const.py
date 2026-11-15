@@ -63,7 +63,10 @@ PROGRAM_STATUS_WINDOW = 32
 VERIFY_CHUNK_MAX = 64
 # Largest PROGRAM payload the device can take once it reports page splitting
 # (firmware >= 1.2.9); a single-command length field is one byte.
-OTA_CHUNK_MAX = 240
+# Capped at 128 on purpose: the ESPHome proxy turns writes above that into
+# prepare/execute long writes (dozens of round trips each), which is both slow
+# and what made the 240-byte attempt fail mid-upload.
+OTA_CHUNK_MAX = 128
 OTA_FEATURE_PAGE_SPLIT = 0x01
 OTA_FEATURE_CRC32 = 0x02
 ERASE_TIMEOUT = 60
