@@ -42,7 +42,7 @@ class FirmwareCloudCoordinator(DataUpdateCoordinator[Manifest]):
     """Fetch the firmware manifest on a timer."""
 
     def __init__(
-        self, hass: HomeAssistant, url: str, entry: ConfigEntry
+        self, hass: HomeAssistant, urls: list[str], entry: ConfigEntry
     ) -> None:
         super().__init__(
             hass,
@@ -51,29 +51,34 @@ class FirmwareCloudCoordinator(DataUpdateCoordinator[Manifest]):
             name="ch592_ota firmware manifest",
             update_interval=timedelta(minutes=MANIFEST_UPDATE_INTERVAL_MINUTES),
         )
-        self.url = url
+        self.urls = urls
+        self.url = urls[0]
 
     async def _async_update_data(self) -> Manifest:
-        try:
-            async with asyncio.timeout(30):
-                async with async_get_clientsession(self.hass).get(self.url) as resp:
-                    if resp.status != 200:
-                        raise UpdateFailed(
-                            f"固件清单返回 HTTP {resp.status}: {self.url}"
-                        )
-                    payload = await resp.json(content_type=None)
-        except UpdateFailed:
-            raise
-        except (TimeoutError, aiohttp.ClientError, ValueError) as err:
-            raise UpdateFailed(f"读取固件清单失败: {err}") from err
+        errors: list[str] = []
+        for url in self.urls:
+            try:
+                async with asyncio.timeout(30):
+                    async with async_get_clientsession(self.hass).get(url) as resp:
+                        if resp.status != 200:
+                            errors.append(f"{url}: HTTP {resp.status}")
+                            continue
+                        payload = await resp.json(content_type=None)
+            except (TimeoutError, aiohttp.ClientError, ValueError) as err:
+                errors.append(f"{url}: {err}")
+                continue
 
-        if not isinstance(payload, dict) or not payload.get("version"):
-            raise UpdateFailed("固件清单缺少 version 字段")
-        payload["download_url"] = urljoin(
-            self.url, str(payload.get("file") or "ch592_ota.bin")
-        )
-        _LOGGER.debug("固件清单: %s", payload)
-        return payload
+            if not isinstance(payload, dict) or not payload.get("version"):
+                errors.append(f"{url}: 缺少 version 字段")
+                continue
+            self.url = url
+            payload["download_url"] = urljoin(
+                url, str(payload.get("file") or "ch592_ota.bin")
+            )
+            _LOGGER.debug("固件清单: %s", payload)
+            return payload
+
+        raise UpdateFailed("读取固件清单失败: " + "; ".join(errors))
 
 
 def manifest_version(manifest: Manifest | None) -> str | None:

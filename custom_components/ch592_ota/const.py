@@ -13,10 +13,15 @@ DEFAULT_DEVICE_NAME = "CH592"
 DEFAULT_FIRMWARE = "www/firmware/ch592_ota.bin"
 
 # Firmware repository published by tools/publish_firmware.py.
-DEFAULT_MANIFEST_URL = (
+# Tried in order until one answers, so a temporary Gitee/GitHub outage or a
+# still-private mirror does not break the update check.
+DEFAULT_MANIFEST_URLS = (
     "https://gitee.com/zigbridge/ch592-gas-broadcaster"
-    "/raw/master/firmware/manifest.json"
+    "/raw/master/firmware/manifest.json",
+    "https://raw.githubusercontent.com/TeaRain/ch592-gas-broadcaster"
+    "/master/firmware/manifest.json",
 )
+DEFAULT_MANIFEST_URL = DEFAULT_MANIFEST_URLS[0]
 MANIFEST_UPDATE_INTERVAL_MINUTES = 30
 
 SERVICE_FLASH = "flash"

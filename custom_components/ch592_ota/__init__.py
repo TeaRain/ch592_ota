@@ -22,7 +22,7 @@ from .const import (
     CONF_FIRMWARE,
     CONF_MANIFEST,
     CONF_VERSION,
-    DEFAULT_MANIFEST_URL,
+    DEFAULT_MANIFEST_URLS,
     DOMAIN,
     SERVICE_ABORT,
     SERVICE_FLASH,
@@ -62,13 +62,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = Ch592OtaCoordinator(hass, entry)
     entry.runtime_data = coordinator
 
-    manifest_url = str(
-        entry.options.get(CONF_MANIFEST, DEFAULT_MANIFEST_URL) or ""
-    ).strip()
-    if manifest_url:
-        coordinator.cloud = FirmwareCloudCoordinator(hass, manifest_url, entry)
-        # Refresh once, but don't block setup if the network is down.
-        await coordinator.cloud.async_refresh()
+    manifest_url = str(entry.options.get(CONF_MANIFEST, "") or "").strip()
+    manifest_urls = [manifest_url] if manifest_url else list(DEFAULT_MANIFEST_URLS)
+    coordinator.cloud = FirmwareCloudCoordinator(hass, manifest_urls, entry)
+    # Refresh once, but don't block setup if the network is down.
+    await coordinator.cloud.async_refresh()
 
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     await coordinator.async_start()

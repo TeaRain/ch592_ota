@@ -15,7 +15,6 @@ from .const import (
     CONF_MANIFEST,
     DEFAULT_DEVICE_NAME,
     DEFAULT_FIRMWARE,
-    DEFAULT_MANIFEST_URL,
     DOMAIN,
 )
 
@@ -83,9 +82,7 @@ class Ch592OtaOptionsFlow(config_entries.OptionsFlow):
                     ): str,
                     vol.Optional(
                         CONF_MANIFEST,
-                        default=self.config_entry.options.get(
-                            CONF_MANIFEST, DEFAULT_MANIFEST_URL
-                        ),
+                        default=self.config_entry.options.get(CONF_MANIFEST, ""),
                     ): str,
                 }
             ),
