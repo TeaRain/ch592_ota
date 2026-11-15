@@ -401,9 +401,17 @@ class Ch592OtaCoordinator:
         )
         self._notify()
 
+    @staticmethod
+    def _is_retryable(err: Exception) -> bool:
+        """Link drops are worth a fresh attempt; protocol errors are not."""
+        text = str(err).lower()
+        return any(
+            key in text
+            for key in ("断开", "connect", "timeout", "timed out", "超时")
+        )
+
     async def _async_run_ota(self, image: bytes, target: str | None) -> None:
         try:
-            client: Ch592OtaClient | None = None
             # Chunks must be multiples of 16 so the WCH addr16 field stays aligned.
             requested = self._requested_chunk
             chunks: list[int | None] = [requested] if requested else [None]
@@ -412,28 +420,47 @@ class Ch592OtaCoordinator:
                     requested is None or candidate < requested
                 ):
                     chunks.append(candidate)
-            for chunk in chunks:
-                client = Ch592OtaClient(
-                    self.hass,
-                    self.address,
-                    image,
-                    self._on_progress,
-                    self._on_ota_info,
-                )
-                self._client = client
-                try:
-                    # 64-byte chunks need ~6900 write+read round trips for 216 KiB;
-                    # through an ESPHome proxy that can take 10+ minutes.
-                    await asyncio.wait_for(client.async_run(chunk), timeout=1800)
-                    break
-                except OtaMtuError as err:
-                    _LOGGER.warning(
-                        "OTA 写入失败，尝试更小的分片 (chunk=%s): %s", chunk, err
+
+            uploaded = False
+            # The device stays in OTA mode for 8 minutes after a dropped link,
+            # and a full 128-byte upload now takes ~35 s, so retrying the whole
+            # upload is cheaper than giving up.
+            for attempt in range(1, 4):
+                for chunk in chunks:
+                    client = Ch592OtaClient(
+                        self.hass,
+                        self.address,
+                        image,
+                        self._on_progress,
+                        self._on_ota_info,
                     )
-                    self.data["error"] = str(err)
-                    self._notify()
-                    await asyncio.sleep(2)
-            else:
+                    self._client = client
+                    try:
+                        await asyncio.wait_for(
+                            client.async_run(chunk), timeout=1800
+                        )
+                        uploaded = True
+                        break
+                    except OtaMtuError as err:
+                        _LOGGER.warning(
+                            "OTA 写入失败，尝试更小的分片 (chunk=%s): %s", chunk, err
+                        )
+                        self.data["error"] = str(err)
+                        self._notify()
+                        await asyncio.sleep(2)
+                    except OtaError as err:
+                        self.data["error"] = str(err)
+                        self._notify()
+                        if not self._is_retryable(err) or attempt >= 3:
+                            raise
+                        _LOGGER.warning(
+                            "OTA 第 %s 次中断（%s），准备整体重传", attempt, err
+                        )
+                        await asyncio.sleep(2)
+                        break
+                if uploaded:
+                    break
+            if not uploaded:
                 raise RuntimeError(str(self.data.get("error") or "OTA 上传失败"))
 
             start_seq = int(self.data["ads"])

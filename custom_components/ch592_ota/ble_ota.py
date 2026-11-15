@@ -394,6 +394,9 @@ class Ch592OtaClient:
         """
         expected = zlib.crc32(self._image) & 0xFFFFFFFF
         self._notify(90, "verifying", 0, len(self._image))
+        # The device blocks its BLE task while it crunches 216 KiB; a short
+        # pause after the last flash write lets the link settle first.
+        await asyncio.sleep(0.5)
         await self._write(bytes((CMD_IAP_CRC32, 0)))
         response = await self._read_response(ERASE_TIMEOUT)
         if len(response) < 6:
