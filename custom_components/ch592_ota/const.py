@@ -8,6 +8,11 @@ CONF_FIRMWARE = "firmware"
 CONF_VERSION = "version"
 CONF_CHUNK = "chunk"
 CONF_MANIFEST = "manifest_url"
+CONF_AUTO_INSTALL = "auto_install_on_ota_mode"
+
+# Pressing B for 3 s puts the device into OTA mode; the integration can then
+# start the upload by itself when a newer firmware is published.
+DEFAULT_AUTO_INSTALL = True
 
 DEFAULT_DEVICE_NAME = "CH592"
 DEFAULT_FIRMWARE = "www/firmware/ch592_ota.bin"

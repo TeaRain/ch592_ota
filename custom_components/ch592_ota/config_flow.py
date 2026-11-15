@@ -11,8 +11,10 @@ from homeassistant.const import CONF_ADDRESS, CONF_NAME
 from homeassistant.core import callback
 
 from .const import (
+    CONF_AUTO_INSTALL,
     CONF_FIRMWARE,
     CONF_MANIFEST,
+    DEFAULT_AUTO_INSTALL,
     DEFAULT_DEVICE_NAME,
     DEFAULT_FIRMWARE,
     DOMAIN,
@@ -84,6 +86,12 @@ class Ch592OtaOptionsFlow(config_entries.OptionsFlow):
                         CONF_MANIFEST,
                         default=self.config_entry.options.get(CONF_MANIFEST, ""),
                     ): str,
+                    vol.Optional(
+                        CONF_AUTO_INSTALL,
+                        default=self.config_entry.options.get(
+                            CONF_AUTO_INSTALL, DEFAULT_AUTO_INSTALL
+                        ),
+                    ): bool,
                 }
             ),
         )

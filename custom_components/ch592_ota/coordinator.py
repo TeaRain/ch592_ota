@@ -21,14 +21,21 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .ble_ota import Ch592OtaClient, OtaMtuError
 from .bthome import parse_bthome_version
-from .firmware import FirmwareCloudCoordinator
 from .const import (
+    CONF_AUTO_INSTALL,
     CONF_FIRMWARE,
     CONF_VERSION,
+    DEFAULT_AUTO_INSTALL,
     DEFAULT_FIRMWARE,
     IMAGE_SIZE,
     OTA_SERVICE_UUID,
     REBOOT_TIMEOUT,
+)
+from .firmware import (
+    FirmwareCloudCoordinator,
+    async_download_firmware,
+    is_newer,
+    manifest_version,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,6 +68,7 @@ class Ch592OtaCoordinator:
         self._client: Ch592OtaClient | None = None
         self._requested_chunk: int | None = None
         self.cloud: FirmwareCloudCoordinator | None = None
+        self._auto_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------- lifecycle
 
@@ -116,6 +124,78 @@ class Ch592OtaCoordinator:
         ):
             self.data["ota_mode"] = True
             self._notify()
+            self._maybe_auto_install()
+
+    # ------------------------------------------------------- auto update
+
+    @property
+    def auto_install(self) -> bool:
+        return bool(
+            self.entry.options.get(CONF_AUTO_INSTALL, DEFAULT_AUTO_INSTALL)
+        )
+
+    @callback
+    def _maybe_auto_install(self) -> None:
+        """Start the OTA as soon as the device advertises OTA mode.
+
+        This is what makes "hold B for 3 s" enough: no button press in HA.
+        """
+        if not self.auto_install:
+            return
+        if self._task is not None and not self._task.done():
+            return
+        if self._auto_task is not None and not self._auto_task.done():
+            return
+
+        manifest = self.cloud.data if self.cloud else None
+        if not isinstance(manifest, dict):
+            _LOGGER.debug("OTA 模式已进入，但没有固件清单，跳过自动升级")
+            return
+        version = manifest_version(manifest)
+        installed = self.data.get("firmware_version")
+        installed_str = str(installed) if installed else None
+        if not is_newer(version, installed_str):
+            _LOGGER.debug(
+                "OTA 模式已进入，但没有新固件 (设备 %s, 最新 %s)",
+                installed_str,
+                version,
+            )
+            return
+
+        _LOGGER.info(
+            "检测到 OTA 模式且有新固件 %s（当前 %s），自动开始升级",
+            version,
+            installed_str,
+        )
+        self._auto_task = self.hass.async_create_task(
+            self._async_auto_install(manifest, version)
+        )
+
+    async def _async_auto_install(
+        self, manifest: dict[str, object], version: str | None
+    ) -> None:
+        try:
+            # Give the device a moment to switch from advertising to connectable.
+            await asyncio.sleep(2)
+            image = await async_download_firmware(self.hass, manifest)
+            await self.async_start_ota(
+                version=version, image=image, meta=manifest
+            )
+            task = self.current_task
+            if task is not None:
+                await task
+            if self.data.get("status") != "success":
+                _LOGGER.warning(
+                    "自动升级未成功: %s", self.data.get("error")
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 - surface every failure
+            _LOGGER.exception("自动升级失败")
+            self.data.update(status="failed", phase="failed", error=str(err))
+            self._notify()
+        finally:
+            self._auto_task = None
 
     @property
     def last_seen(self) -> datetime | None:

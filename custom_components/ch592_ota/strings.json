@@ -24,7 +24,8 @@
         "title": "CH592 OTA options",
         "data": {
           "firmware": "Firmware path (under /config)",
-          "manifest_url": "Firmware manifest URL (leave empty for Gitee -> GitHub auto)"
+          "manifest_url": "Firmware manifest URL (leave empty for Gitee -> GitHub auto)",
+          "auto_install_on_ota_mode": "Install automatically when the device enters OTA mode"
         }
       }
     }

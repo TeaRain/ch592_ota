@@ -24,7 +24,8 @@
         "title": "CH592 OTA 选项",
         "data": {
           "firmware": "固件路径（位于 /config 下）",
-          "manifest_url": "固件清单 URL（留空 = Gitee → GitHub 自动检查）"
+          "manifest_url": "固件清单 URL（留空 = Gitee → GitHub 自动检查）",
+          "auto_install_on_ota_mode": "设备进入 OTA 模式时自动升级（长按 B 即可）"
         }
       }
     }

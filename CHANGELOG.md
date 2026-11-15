@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- **长按 B 即自动升级**：设备进入 OTA 模式（广播 `0xFEE0`）时，若固件仓库有
+  更新版本，集成自动下载并开始 OTA，不需要再在 HA 点“安装”
+- 新增选项 `auto_install_on_ota_mode`（默认开启），可关闭恢复手动模式
+
 ## 0.2.2
 
 - 修复 HA 2026.11 下集成无法加载：`CONNECTION_BLUETOOTH` 应从
