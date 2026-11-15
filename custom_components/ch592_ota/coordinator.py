@@ -151,7 +151,7 @@ class Ch592OtaCoordinator:
         reporting the UUID list.
         """
         name = (service_info.name or "").strip()
-        if name in ("GasMeter OTA", "GasMeterOTA"):
+        if "ota" in name.lower():
             return True
         if any(u.lower() == OTA_SERVICE_UUID for u in service_info.service_uuids):
             return True
@@ -209,18 +209,32 @@ class Ch592OtaCoordinator:
         self, manifest: dict[str, object], version: str | None
     ) -> None:
         try:
-            # Give the device a moment to switch from advertising to connectable.
-            await asyncio.sleep(2)
             image = await async_download_firmware(self.hass, manifest)
-            await self.async_start_ota(
-                version=version, image=image, meta=manifest
-            )
-            task = self.current_task
-            if task is not None:
-                await task
-            if self.data.get("status") != "success":
+            for attempt in (1, 2):
+                # Give the device a moment to switch from advertising to
+                # connectable; a fresh attempt waits longer.
+                await asyncio.sleep(2 if attempt == 1 else 8)
+                try:
+                    await self.async_start_ota(
+                        version=version, image=image, meta=manifest
+                    )
+                    task = self.current_task
+                    if task is not None:
+                        await task
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - retried below
+                    _LOGGER.exception("自动升级第 %s 次尝试失败", attempt)
+                if self.data.get("status") == "success":
+                    return
+                if int(self.data.get("progress") or 0) >= 5:
+                    # The upload went somewhere and then broke: retrying from
+                    # scratch rarely helps and costs another full upload.
+                    break
                 _LOGGER.warning(
-                    "自动升级未成功: %s", self.data.get("error")
+                    "自动升级未成功（第 %s 次）: %s",
+                    attempt,
+                    self.data.get("error"),
                 )
         except asyncio.CancelledError:
             raise
