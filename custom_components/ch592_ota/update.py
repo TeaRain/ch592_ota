@@ -19,6 +19,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import CONF_FIRMWARE
 from .coordinator import Ch592OtaCoordinator
 from .entity import build_device_info
 from .firmware import (
@@ -161,7 +162,12 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
                 self.coordinator.read_image, path
             )
         except (OSError, HomeAssistantError) as err:
-            _LOGGER.warning("无法读取固件文件: %s", err)
+            # The local image is only a fallback for the cloud manifest now, so
+            # a missing file is normal unless a path was configured on purpose.
+            if self.coordinator.entry.options.get(CONF_FIRMWARE):
+                _LOGGER.warning("无法读取固件文件: %s", err)
+            else:
+                _LOGGER.debug("没有本地固件文件，使用云端清单: %s", err)
             return
         version = meta.get("version")
         if version:
