@@ -31,6 +31,8 @@ MANIFEST_UPDATE_INTERVAL_MINUTES = 30
 
 SERVICE_FLASH = "flash"
 SERVICE_ABORT = "abort"
+# Development helper: re-import the integration from disk without a HA restart.
+SERVICE_RELOAD_CODE = "reload_code"
 
 BTHOME_SERVICE_DATA_UUID = "0000fcd2-0000-1000-8000-00805f9b34fb"
 OTA_SERVICE_UUID = "0000fee0-0000-1000-8000-00805f9b34fb"

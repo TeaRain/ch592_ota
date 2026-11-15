@@ -7,7 +7,9 @@ button B for 3 seconds.
 
 from __future__ import annotations
 
+import importlib
 import logging
+import sys
 
 import voluptuous as vol
 
@@ -26,6 +28,7 @@ from .const import (
     DOMAIN,
     SERVICE_ABORT,
     SERVICE_FLASH,
+    SERVICE_RELOAD_CODE,
 )
 from .firmware import FirmwareCloudCoordinator
 
@@ -107,6 +110,44 @@ def _async_register_services(hass: HomeAssistant) -> None:
         coordinator = _get_coordinator(hass, call.data.get(CONF_ADDRESS))
         await coordinator.async_abort()
 
+    async def async_handle_reload_code(call: ServiceCall) -> None:
+        """Development helper: re-import the files from disk and reload.
+
+        Saves a full Home Assistant restart while iterating on this
+        integration. Reload order matters: constants first, then their users.
+        A real restart is still recommended once things settle.
+        """
+        names = [
+            "const",
+            "bthome",
+            "ble_ota",
+            "firmware",
+            "entity",
+            "coordinator",
+            "sensor",
+            "binary_sensor",
+            "button",
+            "update",
+            "config_flow",
+        ]
+        for name in names:
+            module = sys.modules.get(f"custom_components.{DOMAIN}.{name}")
+            if module is None:
+                continue
+            try:
+                importlib.reload(module)
+            except Exception:  # noqa: BLE001 - keep going, report what failed
+                _LOGGER.exception("重新导入 %s 失败", name)
+        package = sys.modules.get(f"custom_components.{DOMAIN}")
+        if package is not None:
+            try:
+                importlib.reload(package)
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("重新导入 %s 包失败", DOMAIN)
+        for entry in hass.config_entries.async_entries(DOMAIN):
+            await hass.config_entries.async_reload(entry.entry_id)
+        _LOGGER.warning("ch592_ota 代码已重新加载（仅开发用，长期使用请重启 HA）")
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_FLASH,
@@ -120,6 +161,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
         async_handle_abort,
         schema=ABORT_SCHEMA,
     )
+    hass.services.async_register(DOMAIN, SERVICE_RELOAD_CODE, async_handle_reload_code)
 
 
 def _get_coordinator(hass: HomeAssistant, address: str | None):
