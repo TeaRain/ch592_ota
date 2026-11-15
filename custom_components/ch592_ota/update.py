@@ -85,11 +85,15 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
 
     @property
     def latest_version(self) -> str | None:
-        cloud_version = manifest_version(self._cloud_manifest())
+        """Never offer a downgrade: a stale local .bin must not look newer."""
         installed = self.installed_version
-        if is_newer(cloud_version, installed):
-            return cloud_version
-        return self._latest_version or installed
+        manifest = self._cloud_manifest()
+        if manifest is not None:
+            cloud_version = manifest_version(manifest)
+            return cloud_version if is_newer(cloud_version, installed) else installed
+        if self._latest_version and is_newer(self._latest_version, installed):
+            return self._latest_version
+        return installed
 
     @property
     def release_summary(self) -> str | None:
