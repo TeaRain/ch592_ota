@@ -39,6 +39,8 @@ from .const import (
     IMAGE_SIZE,
     MIN_CHUNK,
     OTA_CHAR_UUID,
+    OTA_CHUNK_MAX,
+    OTA_FEATURE_PAGE_SPLIT,
     OTA_IMAGE_MAGIC,
     OTA_STATUS_OK,
     PROGRAM_STATUS_WINDOW,
@@ -121,18 +123,34 @@ class Ch592OtaClient:
                 timeout=30.0,
             )
             self._char = self._find_ota_char()
-            if chunk is not None and chunk % 16 == 0 and MIN_CHUNK <= chunk <= DEFAULT_CHUNK:
-                self._chunk = chunk
-            else:
-                self._chunk = self._pick_chunk()
+            requested = (
+                chunk
+                if chunk is not None
+                and chunk % 16 == 0
+                and MIN_CHUNK <= chunk <= OTA_CHUNK_MAX
+                else None
+            )
+            self._chunk = requested or self._pick_chunk()
             self._verify_chunk = min(VERIFY_CHUNK_MAX, self._pick_chunk_max())
             mtu = self._get_mtu()
+
+            info = await self._async_info()
+            # Only firmware that splits PROGRAM writes at flash pages can take
+            # chunks larger than the 256-byte page limit safely.
+            if requested is None:
+                if info.get("features", 0) & OTA_FEATURE_PAGE_SPLIT:
+                    self._chunk = min(OTA_CHUNK_MAX, self._pick_chunk_max())
+                else:
+                    self._chunk = self._pick_chunk()
             _LOGGER.debug(
-                "OTA connected to %s, mtu=%s, chunk=%s verify_chunk=%s",
+                "OTA connected to %s, mtu=%s, chunk=%s verify_chunk=%s "
+                "features=0x%02X proto=%s",
                 self._address,
                 mtu,
                 self._chunk,
                 self._verify_chunk,
+                info.get("features", 0),
+                info.get("protocol"),
             )
             self._notify(
                 2,
@@ -140,7 +158,6 @@ class Ch592OtaClient:
                 f"verify={self._verify_chunk}",
             )
 
-            info = await self._async_info()
             image_size = info["image_size"]
             block_size = info["block_size"]
             if image_size != IMAGE_SIZE:
@@ -286,6 +303,9 @@ class Ch592OtaClient:
             "image_size": _le32(response[1:5]),
             "block_size": int.from_bytes(response[5:7], "little"),
             "chip_id": int.from_bytes(response[7:9], "little"),
+            # Firmware >= 1.2.9 reports capabilities; older ones send zeros.
+            "features": response[9] if len(response) >= 10 else 0,
+            "protocol": response[10] if len(response) >= 11 else 1,
         }
         _LOGGER.debug("OTA info: %s", info)
         return info

@@ -60,6 +60,10 @@ MIN_CHUNK = 16
 # page limit that forces small PROGRAM chunks.
 PROGRAM_STATUS_WINDOW = 32
 VERIFY_CHUNK_MAX = 240
+# Largest PROGRAM payload the device can take once it reports page splitting
+# (firmware >= 1.2.9); a single-command length field is one byte.
+OTA_CHUNK_MAX = 240
+OTA_FEATURE_PAGE_SPLIT = 0x01
 ERASE_TIMEOUT = 60
 STATUS_TIMEOUT = 20
 REBOOT_TIMEOUT = 180
