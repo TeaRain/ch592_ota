@@ -19,7 +19,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
-from .ble_ota import Ch592OtaClient, OtaMtuError
+from .ble_ota import Ch592OtaClient, OtaError, OtaMtuError
 from .bthome import parse_bthome_version
 from .const import (
     CONF_AUTO_INSTALL,
@@ -71,6 +71,9 @@ class Ch592OtaCoordinator:
         self._auto_task: asyncio.Task | None = None
         self._last_diag_notify = 0.0
         self._run_started: float | None = None
+        # Set once a normal BTHome advertisement arrives, so a leftover OTA
+        # mode from a previous session does not trigger an upgrade by itself.
+        self._seen_bthome = False
 
     # ------------------------------------------------------------- lifecycle
 
@@ -136,6 +139,7 @@ class Ch592OtaCoordinator:
         else:
             version = parse_bthome_version(service_info)
             if version is not None:
+                self._seen_bthome = True
                 self.data["firmware_version"] = version
                 self.data["ads"] = int(self.data["ads"]) + 1
                 self.data["last_seen"] = datetime.now(UTC)
@@ -186,6 +190,8 @@ class Ch592OtaCoordinator:
 
         if not self.auto_install:
             return skip("选项 auto_install_on_ota_mode 已关闭")
+        if not self._seen_bthome:
+            return skip("本次启动还没看到普通广播，可能是上次遗留的 OTA 模式，未自动升级")
         if self._task is not None and not self._task.done():
             return skip("已有升级任务在运行")
         if self._auto_task is not None and not self._auto_task.done():
@@ -454,7 +460,14 @@ class Ch592OtaCoordinator:
                     except OtaError as err:
                         self.data["error"] = str(err)
                         self._notify()
-                        if not self._is_retryable(err) or attempt >= 3:
+                        # Only a drop *after* data went out is worth a full
+                        # re-upload; a failed connection just wastes minutes.
+                        made_progress = int(self.data.get("progress") or 0) > 10
+                        if (
+                            not made_progress
+                            or not self._is_retryable(err)
+                            or attempt >= 3
+                        ):
                             raise
                         _LOGGER.warning(
                             "OTA 第 %s 次中断（%s），准备整体重传", attempt, err
