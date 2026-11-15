@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.7
+
+- **修复升级成功后卡在 98 % 报失败**：普通 BTHome 广播的 `service_uuids` 里也会带
+  `0xFFE0/0xFEE0`（代理在之前 OTA 连接时做 GATT 发现后缓存下来的），于是每条普通
+  广播都被当成 OTA 广播：`firmware_version` 不再更新、`ota_mode` 也不再清零。
+  结果固件明明已经是 1.3.1，集成还认为设备是 1.3.0，等满 180 秒报「未看到目标版本」。
+- 现在用 **BTHome 的 0xFCD2 服务数据**做判据：OTA 固件从来不发它。
+  - 有 fee0 且**没有** fcd2 → OTA 广播
+  - 有 fcd2 → 普通广播（更新版本、清除 OTA 模式）
+
 ## 0.4.6
 
 - **修复 0.4.4 引入的 `NameError: OtaError is not defined`**：`coordinator.py`

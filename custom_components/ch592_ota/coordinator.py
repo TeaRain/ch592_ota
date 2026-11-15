@@ -20,7 +20,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
 from .ble_ota import Ch592OtaClient, OtaError, OtaMtuError
-from .bthome import parse_bthome_version
+from .bthome import has_bthome_data, parse_bthome_version
 from .const import (
     CONF_AUTO_INSTALL,
     CONF_FIRMWARE,
@@ -154,18 +154,21 @@ class Ch592OtaCoordinator:
 
     @staticmethod
     def _is_ota_advertisement(service_info: BluetoothServiceInfoBleak) -> bool:
-        """Recognise the OTA firmware advertisement by its 0xFEE0 service.
+        """Recognise the OTA firmware advertisement.
 
-        The device name is deliberately not used: HA caches "GasMeter OTA" for
-        this address after the first OTA session, so normal BTHome broadcasts
-        report that name too.
+        Neither the name nor the UUID list is reliable on its own: HA caches
+        "GasMeter OTA" as the device name, and the proxy keeps reporting
+        0xFFE0/0xFEE0 as *service UUIDs* of normal BTHome broadcasts (left over
+        from a GATT discovery during an earlier OTA). The BTHome 0xFCD2 service
+        data is the trustworthy marker: the OTA firmware never sends it.
         """
-        if any(u.lower() == OTA_SERVICE_UUID for u in service_info.service_uuids):
-            return True
-        return any(
+        has_ota_uuid = any(
+            u.lower() == OTA_SERVICE_UUID for u in service_info.service_uuids
+        ) or any(
             u.lower() in (OTA_SERVICE_UUID, "fee0")
             for u in service_info.service_data
         )
+        return has_ota_uuid and not has_bthome_data(service_info)
 
     # ------------------------------------------------------- auto update
 

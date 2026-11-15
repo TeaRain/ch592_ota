@@ -73,6 +73,11 @@ def _service_data(service_info: BluetoothServiceInfoBleak) -> bytes | None:
     return None
 
 
+def has_bthome_data(service_info: BluetoothServiceInfoBleak) -> bool:
+    """Whether this advertisement carries a BTHome (0xFCD2) payload."""
+    return _service_data(service_info) is not None
+
+
 def parse_bthome_version(service_info: BluetoothServiceInfoBleak) -> str | None:
     """Return the value of object 0x53 (text) from a BTHome v2 advertisement."""
     data = _service_data(service_info)
