@@ -51,3 +51,15 @@ class Ch592OtaModeSensor(BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         return bool(self.coordinator.data.get("ota_mode"))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Diagnostics: which advertisements this integration actually sees."""
+        last_seen = self.coordinator.last_seen
+        return {
+            "ads_total": self.coordinator.data.get("ads_total", 0),
+            "last_name": self.coordinator.data.get("last_name"),
+            "last_service_uuids": self.coordinator.data.get("last_uuids"),
+            "last_service_data_uuids": self.coordinator.data.get("last_data_uuids"),
+            "last_seen": last_seen.isoformat() if last_seen else None,
+        }

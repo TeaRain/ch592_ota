@@ -69,6 +69,7 @@ class Ch592OtaCoordinator:
         self._requested_chunk: int | None = None
         self.cloud: FirmwareCloudCoordinator | None = None
         self._auto_task: asyncio.Task | None = None
+        self._last_diag_notify = 0.0
 
     # ------------------------------------------------------------- lifecycle
 
@@ -111,6 +112,12 @@ class Ch592OtaCoordinator:
         service_info: BluetoothServiceInfoBleak,
         change,
     ) -> None:
+        # Diagnostics: visible on binary_sensor.*_ota_mode attributes.
+        self.data["ads_total"] = int(self.data.get("ads_total", 0)) + 1
+        self.data["last_name"] = service_info.name
+        self.data["last_uuids"] = list(service_info.service_uuids)[:6]
+        self.data["last_data_uuids"] = list(service_info.service_data)[:6]
+
         version = parse_bthome_version(service_info)
         if version is not None:
             self.data["firmware_version"] = version
@@ -119,12 +126,39 @@ class Ch592OtaCoordinator:
             self.data["ota_mode"] = False
             self._notify()
 
-        elif not self.data["ota_mode"] and any(
-            uuid.lower() == OTA_SERVICE_UUID for uuid in service_info.service_uuids
-        ):
+        elif not self.data["ota_mode"] and self._is_ota_advertisement(service_info):
+            _LOGGER.info(
+                "检测到 OTA 广播 (name=%s, uuids=%s)",
+                service_info.name,
+                list(service_info.service_uuids),
+            )
             self.data["ota_mode"] = True
             self._notify()
             self._maybe_auto_install()
+
+        # Throttled refresh so the diagnostic attributes stay current.
+        now = asyncio.get_running_loop().time()
+        if now - self._last_diag_notify >= 5:
+            self._last_diag_notify = now
+            self._notify()
+
+    @staticmethod
+    def _is_ota_advertisement(service_info: BluetoothServiceInfoBleak) -> bool:
+        """Recognise the OTA firmware advertisement.
+
+        The advertisement carries 0xFEE0 (and 0xFFE0), but the name from the
+        scan response is checked too so detection does not depend on the proxy
+        reporting the UUID list.
+        """
+        name = (service_info.name or "").strip()
+        if name in ("GasMeter OTA", "GasMeterOTA"):
+            return True
+        if any(u.lower() == OTA_SERVICE_UUID for u in service_info.service_uuids):
+            return True
+        return any(
+            u.lower() in (OTA_SERVICE_UUID, "fee0")
+            for u in service_info.service_data
+        )
 
     # ------------------------------------------------------- auto update
 

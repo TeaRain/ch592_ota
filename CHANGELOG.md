@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+- OTA 模式识别更稳：除了 0xFEE0 服务 UUID，还匹配广播名 `GasMeter OTA`
+  和 service data 里的 fee0
+- `binary_sensor.*_ota_mode` 增加诊断属性：`ads_total`、`last_name`、
+  `last_service_uuids`、`last_service_data_uuids`
+- 修复某些代理不把 OTA 广播的 UUID 列在上报里的情况下自动升级不触发的问题
+
 ## 0.3.0
 
 - **长按 B 即自动升级**：设备进入 OTA 模式（广播 `0xFEE0`）时，若固件仓库有
