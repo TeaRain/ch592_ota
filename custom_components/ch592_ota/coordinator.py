@@ -451,11 +451,19 @@ class Ch592OtaCoordinator:
     async def _async_wait_for_reboot(
         self, start_seq: int, target: str | None
     ) -> bool:
+        """Wait until the device advertises again after the reboot.
+
+        A device reporting the target version is conclusive on its own; waiting
+        for one *more* advertisement made a finished OTA sit at 98 % until the
+        next 60 s broadcast, because the reboot advertisement is often already
+        counted before ``start_seq`` is taken.
+        """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + REBOOT_TIMEOUT
         while loop.time() < deadline:
-            if int(self.data["ads"]) > start_seq:
-                if target is None or self.data["firmware_version"] == target:
-                    return True
+            if target is not None and self.data["firmware_version"] == target:
+                return True
+            if target is None and int(self.data["ads"]) > start_seq:
+                return True
             await asyncio.sleep(1)
         return False
