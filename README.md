@@ -36,7 +36,17 @@ bluetooth_proxy:
 
 **设置 → 设备与服务 → 添加集成 → 搜索 “CH592 OTA”**
 
-### 方式一：git clone（推荐，方便后续更新）
+### 方式一：HACS / 市场自定义仓库（推荐）
+
+HACS 只识别 GitHub 仓库，所以添加 GitHub 镜像：
+
+1. HACS / 市场 → 右上角 ⋮ → **自定义仓库**；
+2. 添加 `https://github.com/TeaRain/ch592_ota`，类型选 **集成（Integration）**；
+3. 搜索 “CH592 OTA” 安装，然后重启 HA。
+
+HACS 会按默认分支或版本选择来更新集成。
+
+### 方式二：git clone（Gitee 主仓库）
 
 在 HA 的 Terminal / SSH 里：
 
@@ -47,15 +57,16 @@ cp -r /tmp/ch592_ota_repo/custom_components/ch592_ota /config/custom_components/
 rm -rf /tmp/ch592_ota_repo
 ```
 
-### 方式二：下载 ZIP
+GitHub：`https://github.com/TeaRain/ch592_ota.git`。
 
-下载 `https://gitee.com/zigbridge/ch592_ota/repository/archive/master.zip`，
+### 方式三：下载 ZIP
+
+- Gitee：`https://gitee.com/zigbridge/ch592_ota/repository/archive/master.zip`
+- GitHub：`https://github.com/TeaRain/ch592_ota/archive/refs/heads/master.zip`
+
 解压后把 `custom_components/ch592_ota` 复制到 `/config/custom_components/`。
 
-> HACS 的自定义仓库目前只支持 GitHub 仓库，Gitee 仓库需要手动安装/更新。
->
-> 如果仓库是**私有**的，HTTPS clone 需要填 Gitee 用户名和私人令牌；想让 HA 里
-> 免密更新，请在 Gitee 仓库的“管理 → 仓库设置”里把仓库设为公开。
+> HACS 的自定义仓库只支持 GitHub 上的公共仓库；Gitee 仓库需要手动安装/更新。
 
 ## 配置
 
@@ -111,7 +122,8 @@ data:
 
 ## 在线更新集成
 
-在 HA 的 Terminal / SSH 里：
+- 用 HACS / 市场安装的：直接在 HACS 里点“更新”，然后重启 HA。
+- 用 git clone 安装的，在 HA 的 Terminal / SSH 里：
 
 ```bash
 cd /config
