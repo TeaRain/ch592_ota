@@ -105,6 +105,9 @@ class Ch592OtaStatusSensor(Ch592OtaEntity):
             "phase": self.coordinator.data.get("phase"),
             "error": self.coordinator.data.get("error"),
             "ota_mode": self.coordinator.data.get("ota_mode"),
+            # Supply voltage measured by the device in OTA mode (firmware >= 1.3.0).
+            "vdd_mv": self.coordinator.data.get("vdd"),
+            "device_protocol": self.coordinator.data.get("protocol"),
         }
 
 

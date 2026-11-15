@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import zlib
 from collections.abc import Callable
 
 from bleak import BleakClient
@@ -40,12 +41,14 @@ from .const import (
     MIN_CHUNK,
     OTA_CHAR_UUID,
     OTA_CHUNK_MAX,
+    OTA_FEATURE_CRC32,
     OTA_FEATURE_PAGE_SPLIT,
     OTA_IMAGE_MAGIC,
     OTA_STATUS_OK,
     PROGRAM_STATUS_WINDOW,
     STATUS_TIMEOUT,
     VERIFY_CHUNK_MAX,
+    CMD_IAP_CRC32,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -78,6 +81,7 @@ class Ch592OtaClient:
         address: str,
         image: bytes,
         progress_cb: ProgressCallback,
+        info_cb: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         if len(image) > IMAGE_SIZE - 16:
             raise OtaError("固件超过 APP 区可用大小")
@@ -90,6 +94,7 @@ class Ch592OtaClient:
         self._address = address
         self._image = bytes(padded)
         self._progress = progress_cb
+        self._info_cb = info_cb
         self._client: BleakClient | None = None
         self._char = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -98,6 +103,8 @@ class Ch592OtaClient:
         # Whether unacknowledged writes still work; disabled permanently once
         # the proxy/stack rejects one.
         self._no_rsp_ok = True
+        # Filled in from the device INFO response (None when unavailable).
+        self.vdd_mv: int | None = None
 
     # ------------------------------------------------------------------ public
 
@@ -135,6 +142,12 @@ class Ch592OtaClient:
             mtu = self._get_mtu()
 
             info = await self._async_info()
+            self.vdd_mv = info.get("vdd") or None
+            if self._info_cb is not None:
+                try:
+                    self._info_cb(info)
+                except Exception:  # noqa: BLE001 - diagnostics must never abort
+                    _LOGGER.exception("OTA info callback failed")
             # Only firmware that splits PROGRAM writes at flash pages can take
             # chunks larger than the 256-byte page limit safely.
             if requested is None:
@@ -171,8 +184,11 @@ class Ch592OtaClient:
             self._notify(10, "uploading", 0, len(self._image))
             await self._async_program()
 
-            self._notify(86, "verifying", 0, len(self._image))
-            await self._async_verify()
+            if info.get("features", 0) & OTA_FEATURE_CRC32:
+                await self._async_crc32_verify()
+            else:
+                self._notify(86, "verifying", 0, len(self._image))
+                await self._async_verify()
 
             self._notify(97, "rebooting")
             await self._async_end()
@@ -306,6 +322,12 @@ class Ch592OtaClient:
             # Firmware >= 1.2.9 reports capabilities; older ones send zeros.
             "features": response[9] if len(response) >= 10 else 0,
             "protocol": response[10] if len(response) >= 11 else 1,
+            # Firmware >= 1.3.0 reports the supply voltage measured in OTA mode.
+            "vdd": (
+                int.from_bytes(response[11:13], "little")
+                if len(response) >= 13
+                else 0
+            ),
         }
         _LOGGER.debug("OTA info: %s", info)
         return info
@@ -347,6 +369,26 @@ class Ch592OtaClient:
                 pending = 0
             percent = 10 + (done * 75) // total
             self._notify(percent, "uploading", done, total)
+
+    async def _async_crc32_verify(self) -> None:
+        """Ask the device for the CRC32 of Image B — one round trip.
+
+        This replaces the byte-by-byte VERIFY pass (which re-sends the whole
+        image and is therefore ~half of the total airtime).
+        """
+        expected = zlib.crc32(self._image) & 0xFFFFFFFF
+        self._notify(90, "verifying", 0, len(self._image))
+        await self._write(bytes((CMD_IAP_CRC32, 0)))
+        response = await self._read_response(ERASE_TIMEOUT)
+        if len(response) < 6:
+            raise OtaError(f"CRC32 响应异常: {response.hex()}")
+        device_crc = _le32(response[0:4])
+        _LOGGER.debug("OTA crc32 device=0x%08X client=0x%08X", device_crc, expected)
+        if device_crc != expected:
+            raise OtaError(
+                f"校验失败: 设备 0x{device_crc:08X}, 期望 0x{expected:08X}"
+            )
+        self._notify(96, "verified", len(self._image), len(self._image))
 
     async def _async_verify(self) -> None:
         """Read the written image back and compare it.

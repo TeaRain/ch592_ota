@@ -370,6 +370,13 @@ class Ch592OtaCoordinator:
             )
         return image, meta
 
+    @callback
+    def _on_ota_info(self, info: dict[str, object]) -> None:
+        """Device INFO response: supply voltage measured in OTA mode."""
+        self.data["vdd"] = info.get("vdd") or None
+        self.data["protocol"] = info.get("protocol")
+        self._notify()
+
     def _on_progress(
         self, percent: int, phase: str, done: int, total: int
     ) -> None:
@@ -401,7 +408,11 @@ class Ch592OtaCoordinator:
                     chunks.append(candidate)
             for chunk in chunks:
                 client = Ch592OtaClient(
-                    self.hass, self.address, image, self._on_progress
+                    self.hass,
+                    self.address,
+                    image,
+                    self._on_progress,
+                    self._on_ota_info,
                 )
                 self._client = client
                 try:
