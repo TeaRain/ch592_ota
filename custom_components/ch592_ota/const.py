@@ -33,6 +33,8 @@ SERVICE_FLASH = "flash"
 SERVICE_ABORT = "abort"
 SERVICE_SET_GAS = "set_gas"
 SERVICE_CANCEL_GAS = "cancel_gas"
+SERVICE_SET_THRESHOLD = "set_threshold"
+SERVICE_CANCEL_THRESHOLD = "cancel_threshold"
 # Development helper: re-import the integration from disk without a HA restart.
 SERVICE_RELOAD_CODE = "reload_code"
 
@@ -53,12 +55,21 @@ CMD_IAP_END = 0x83
 CMD_IAP_INFO = 0x84
 CMD_IAP_CRC32 = 0x85
 CMD_IAP_SET_GAS = 0x86
+CMD_IAP_SET_THRESHOLD = 0x87
 
-# Gas value protocol: payload carries a fixed magic so a stray packet can never
-# rewrite the billing counter. Values are in 0.001 m³ units.
-GAS_SET_MAGIC = 0x5AA5
+# Config-write protocol: payloads carry a fixed magic so a stray packet can
+# never rewrite the billing counter or the detector threshold.
+CONFIG_MAGIC = 0x5AA5
+GAS_SET_MAGIC = CONFIG_MAGIC
 GAS_MAX_UNITS = 100_000_000  # firmware rolls over at 100 000 m³
 GAS_SET_PENDING_SECONDS = 15 * 60
+
+# Pulse threshold written over the OTA channel (firmware >= 1.4.1). The default
+# matches the firmware's compiled-in value; lower is more sensitive but counts
+# noise, higher misses pulses.
+THRESHOLD_DEFAULT = 100
+THRESHOLD_MIN = 20
+THRESHOLD_MAX = 2000
 
 OTA_STATUS_OK = 0x00
 OTA_STATUS_UNKNOWN_CMD = 0xFE
@@ -84,6 +95,7 @@ OTA_CHUNK_MAX = 128
 OTA_FEATURE_PAGE_SPLIT = 0x01
 OTA_FEATURE_CRC32 = 0x02
 OTA_FEATURE_SET_GAS = 0x04
+OTA_FEATURE_SET_THRESHOLD = 0x08
 ERASE_TIMEOUT = 60
 STATUS_TIMEOUT = 20
 REBOOT_TIMEOUT = 180

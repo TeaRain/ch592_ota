@@ -116,6 +116,9 @@ class Ch592OtaStatusSensor(Ch592OtaEntity):
             "duration_s": self.coordinator.data.get("duration_s"),
             "gas_pending": self.coordinator.data.get("gas_pending"),
             "gas_result": self.coordinator.data.get("gas_result"),
+            "device_threshold": self.coordinator.data.get("threshold"),
+            "threshold_pending": self.coordinator.data.get("threshold_pending"),
+            "threshold_result": self.coordinator.data.get("threshold_result"),
         }
 
 

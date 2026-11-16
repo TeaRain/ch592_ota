@@ -75,3 +75,39 @@ cancel_gas:
       example: "AA:BB:CC:DD:EE:FF"
       selector:
         text:
+set_threshold:
+  name: Set pulse threshold
+  description: >-
+    Write the TCRT5000 pulse threshold into the device's DataFlash over the OTA
+    channel (firmware 1.4.1+). If the device is not in OTA mode the value is
+    armed for 15 minutes: hold button B for 3 seconds and the integration
+    writes it instead of upgrading.
+  fields:
+    address:
+      name: Bluetooth address
+      description: Target device address. Optional when only one CH592 is configured.
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:
+    value:
+      name: Threshold
+      description: >-
+        Detection margin required for one pulse. Lower is more sensitive but
+        counts noise; higher misses pulses. Default 100.
+      example: 100
+      selector:
+        number:
+          min: 20
+          max: 2000
+          step: 10
+          mode: box
+cancel_threshold:
+  name: Cancel pending threshold write
+  description: Drop an armed threshold write so pressing B upgrades firmware again.
+  fields:
+    address:
+      name: Bluetooth address
+      description: Target device address. Optional when only one CH592 is configured.
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:

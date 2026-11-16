@@ -40,8 +40,9 @@ from .const import (
     IMAGE_SIZE,
     CMD_IAP_CRC32,
     CMD_IAP_SET_GAS,
+    CMD_IAP_SET_THRESHOLD,
+    CONFIG_MAGIC,
     GAS_MAX_UNITS,
-    GAS_SET_MAGIC,
     MIN_CHUNK,
     OTA_CHAR_UUID,
     OTA_CHUNK_MAX,
@@ -52,6 +53,8 @@ from .const import (
     OTA_STATUS_UNKNOWN_CMD,
     PROGRAM_STATUS_WINDOW,
     STATUS_TIMEOUT,
+    THRESHOLD_MAX,
+    THRESHOLD_MIN,
     VDD_SAMPLE_WINDOWS,
     VERIFY_CHUNK_MAX,
 )
@@ -353,6 +356,12 @@ class Ch592OtaClient:
                 if len(response) >= 13
                 else 0
             ),
+            # Firmware >= 1.4.1 reports the pulse threshold it is using.
+            "threshold": (
+                int.from_bytes(response[13:15], "little")
+                if len(response) >= 15
+                else None
+            ),
         }
         _LOGGER.debug("OTA info: %s", info)
         return info
@@ -495,6 +504,59 @@ async def async_set_gas(
     if not 0 <= value_units < GAS_MAX_UNITS:
         raise OtaError(f"燃气值超出范围：{value_units / 1000:.3f} m³")
 
+    payload = (
+        bytes((CMD_IAP_SET_GAS, 0))
+        + int(value_units).to_bytes(4, "little")
+        + CONFIG_MAGIC.to_bytes(2, "little")
+    )
+    await _async_write_config(
+        hass,
+        address,
+        payload,
+        "设备固件不支持写燃气值（需要 1.4.0 及以上），请先升级固件",
+    )
+    return int(value_units)
+
+
+async def async_set_threshold(
+    hass: HomeAssistant, address: str, value: int
+) -> int:
+    """Write the TCRT5000 pulse threshold (device must be in OTA mode).
+
+    The new value is stored in DataFlash and takes effect on the next boot; the
+    device does not reboot by itself, so a gas write can follow on the same
+    OTA session. Returns the threshold written.
+    """
+    if not THRESHOLD_MIN <= value <= THRESHOLD_MAX:
+        raise OtaError(
+            f"阈值超出范围：{value}（{THRESHOLD_MIN}~{THRESHOLD_MAX}）"
+        )
+
+    payload = (
+        bytes((CMD_IAP_SET_THRESHOLD, 0))
+        + int(value).to_bytes(2, "little")
+        + CONFIG_MAGIC.to_bytes(2, "little")
+    )
+    await _async_write_config(
+        hass,
+        address,
+        payload,
+        "设备固件不支持调整阈值（需要 1.4.1 及以上），请先升级固件",
+    )
+    return int(value)
+
+
+async def _async_write_config(
+    hass: HomeAssistant,
+    address: str,
+    payload: bytes,
+    unsupported_message: str,
+) -> None:
+    """Send a config command and check the 2-byte status.
+
+    Shared by the gas-value (0x86) and threshold (0x87) writes so both use the
+    same connection retry and error reporting.
+    """
     device = async_ble_device_from_address(hass, address, connectable=True)
     if device is None:
         raise OtaError(
@@ -521,11 +583,6 @@ async def async_set_gas(
         if ota_char is None:
             raise OtaError("设备上没有找到 OTA 特征值，请确认已进入 OTA 模式")
 
-        payload = (
-            bytes((CMD_IAP_SET_GAS, 0))
-            + int(value_units).to_bytes(4, "little")
-            + GAS_SET_MAGIC.to_bytes(2, "little")
-        )
         await client.write_gatt_char(ota_char, payload, response=True)
 
         loop = asyncio.get_running_loop()
@@ -539,12 +596,9 @@ async def async_set_gas(
         if not data:
             raise OtaError("设备没有响应，写入结果未知")
         if data[0] == OTA_STATUS_UNKNOWN_CMD:
-            raise OtaError(
-                "设备固件不支持写燃气值（需要 1.4.0 及以上），请先升级固件"
-            )
+            raise OtaError(unsupported_message)
         if data[0] != OTA_STATUS_OK:
             raise OtaError(f"设备返回错误状态 0x{data[0]:02X}")
-        return int(value_units)
     finally:
         if client is not None and client.is_connected:
             try:

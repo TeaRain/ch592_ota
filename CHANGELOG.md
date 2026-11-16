@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.0
+
+配合固件 1.4.1，采样阈值可以远程调整（默认 100，可设 20~2000）：
+
+- 新增 `number.*_pulse_threshold`（草稿）、`button.*_write_pulse_threshold`
+- 新增服务 `ch592_ota.set_threshold` / `ch592_ota.cancel_threshold`
+- 设备端新增 `0x87` 命令，阈值存 DataFlash 块 3；`INFO` byte13–14 上报当前阈值，
+  能力位 bit3、协议版本 6。`sensor.*_ota_status` 增加 `device_threshold` /
+  `threshold_pending` / `threshold_result`
+- 待写入优先级扩展：阈值与燃气值可以同时排入队列，按 B 后**先写阈值、再写燃气**
+  （阈值不复位，燃气写入才复位），两者都不会触发自动升级
+- 原「取消待写入」按钮改为 `Cancel pending writes`，一次清空两种待写入
+  （`unique_id` 未变，现有实体保留）
+
 ## 0.5.1
 
 - 固件 < 1.4.0 时调用 `set_gas` 给出明确提示：

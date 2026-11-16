@@ -19,7 +19,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
-from .ble_ota import Ch592OtaClient, OtaError, OtaMtuError, async_set_gas
+from .ble_ota import (
+    Ch592OtaClient,
+    OtaError,
+    OtaMtuError,
+    async_set_gas,
+    async_set_threshold,
+)
 from .bthome import has_bthome_data, parse_bthome_fields
 from .const import (
     CONF_AUTO_INSTALL,
@@ -32,6 +38,8 @@ from .const import (
     IMAGE_SIZE,
     OTA_SERVICE_UUID,
     REBOOT_TIMEOUT,
+    THRESHOLD_MAX,
+    THRESHOLD_MIN,
 )
 from .firmware import (
     FirmwareCloudCoordinator,
@@ -83,6 +91,12 @@ class Ch592OtaCoordinator:
         self.data["gas_result"] = None
         self._gas_pending_until = 0.0
         self._gas_task: asyncio.Task | None = None
+        # Pulse threshold (firmware >= 1.4.1): device value, draft, armed intent.
+        self.data["threshold"] = None
+        self.data["threshold_target"] = None
+        self.data["threshold_pending"] = None
+        self.data["threshold_result"] = None
+        self._threshold_pending_until = 0.0
 
     # ------------------------------------------------------------- lifecycle
 
@@ -144,11 +158,15 @@ class Ch592OtaCoordinator:
                 )
                 self.data["ota_mode"] = True
                 self._notify()
-                # An armed gas write wins over an automatic upgrade: the user
-                # pressed B for that, and a finished upgrade would reboot the
-                # device out of OTA mode before the value could be written.
-                if self._gas_pending_value() is not None:
-                    self._maybe_apply_gas()
+                # An armed config write (threshold and/or gas) wins over an
+                # automatic upgrade: the user pressed B for that, and a
+                # finished upgrade would reboot the device out of OTA mode
+                # before the values could be written.
+                if (
+                    self._gas_pending_value() is not None
+                    or self._threshold_pending_value() is not None
+                ):
+                    self._maybe_apply_pending()
                 else:
                     self._maybe_auto_install()
         else:
@@ -262,28 +280,114 @@ class Ch592OtaCoordinator:
         self._gas_pending_until = 0.0
         self._notify()
 
-    @callback
-    def _maybe_apply_gas(self) -> None:
-        value = self._gas_pending_value()
+    # ------------------------------------------------------- pulse threshold
+
+    def _threshold_pending_value(self) -> int | None:
+        """The armed threshold, or None when nothing is armed / it expired."""
+        value = self.data.get("threshold_pending")
         if value is None:
+            return None
+        now = asyncio.get_running_loop().time()
+        if now > self._threshold_pending_until:
+            self.data["threshold_pending"] = None
+            self.data["threshold_result"] = "待写入已超时取消"
+            self._notify()
+            return None
+        return int(value)  # type: ignore[arg-type]
+
+    @callback
+    def set_threshold_target(self, value: int) -> None:
+        """Store the draft threshold; nothing is written to the device here."""
+        self.data["threshold_target"] = int(value)
+        self._notify()
+
+    @callback
+    def cancel_threshold(self) -> None:
+        self.data["threshold_pending"] = None
+        self.data["threshold_result"] = "已取消待写入"
+        self._threshold_pending_until = 0.0
+        self._notify()
+
+    async def async_set_threshold(self, value: int) -> dict[str, object]:
+        """Write now when the device is in OTA mode, otherwise arm it."""
+        if not THRESHOLD_MIN <= value <= THRESHOLD_MAX:
+            raise HomeAssistantError(
+                f"阈值超出范围：{value}（{THRESHOLD_MIN}~{THRESHOLD_MAX}）"
+            )
+        if self._task is not None and not self._task.done():
+            raise HomeAssistantError("升级进行中，请等升级完成后再调整阈值")
+
+        self.data["threshold_target"] = int(value)
+        if self.data.get("ota_mode"):
+            await self._async_write_threshold(value)
+            return {"result": "written", "threshold": value}
+
+        self.data["threshold_pending"] = int(value)
+        self.data["threshold_result"] = None
+        self._threshold_pending_until = (
+            asyncio.get_running_loop().time() + GAS_SET_PENDING_SECONDS
+        )
+        self._notify()
+        return {
+            "result": "armed",
+            "threshold": value,
+            "note": "请长按 B 键 3 秒，进入 OTA 模式后会写入（15 分钟内有效）",
+        }
+
+    async def _async_write_threshold(self, value: int) -> None:
+        self.data["threshold_result"] = "writing"
+        self._notify()
+        try:
+            await async_set_threshold(self.hass, self.address, value)
+        except Exception as err:  # noqa: BLE001 - surface every failure
+            self.data["threshold_result"] = f"写入失败: {err}"
+            self._notify()
+            raise HomeAssistantError(f"写入阈值失败: {err}") from err
+        # The device does not reboot for a threshold write, so OTA mode stays
+        # on and a pending gas value can follow on the same session.
+        self.data.update(
+            threshold_pending=None,
+            threshold=int(value),
+            threshold_result=f"已写入阈值 {value}",
+        )
+        self._threshold_pending_until = 0.0
+        self._notify()
+
+    @callback
+    def _maybe_apply_pending(self) -> None:
+        """Write the armed threshold and/or gas value once OTA mode appears."""
+        if (
+            self._gas_pending_value() is None
+            and self._threshold_pending_value() is None
+        ):
             return
         if self._task is not None and not self._task.done():
             return
         if self._gas_task is not None and not self._gas_task.done():
             return
         self._gas_task = self.hass.async_create_task(
-            self._async_auto_write_gas(value)
+            self._async_auto_write_pending()
         )
 
-    async def _async_auto_write_gas(self, value_units: int) -> None:
+    async def _async_auto_write_pending(self) -> None:
         try:
             # Give the device a moment to switch from advertising to connectable.
             await asyncio.sleep(2)
-            await self._async_write_gas(value_units)
+            # Threshold first: it does not reboot, so the gas write (which does)
+            # can still happen in this OTA session.
+            threshold = self._threshold_pending_value()
+            if threshold is not None:
+                try:
+                    await self._async_write_threshold(threshold)
+                except Exception:  # noqa: BLE001 - recorded in threshold_result
+                    _LOGGER.exception("自动写入阈值失败")
+            gas = self._gas_pending_value()
+            if gas is not None:
+                await self._async_write_gas(gas)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - already recorded in gas_result
-            _LOGGER.exception("自动写入燃气值失败")
+        except Exception:  # noqa: BLE001 - already recorded in the results
+            _LOGGER.exception("自动写入配置失败")
         finally:
             self._gas_task = None
 
@@ -312,6 +416,8 @@ class Ch592OtaCoordinator:
             return skip("选项 auto_install_on_ota_mode 已关闭")
         if self._gas_pending_value() is not None:
             return skip("有待写入的燃气值，本次按 B 优先写燃气值；升级请稍后重新长按 B")
+        if self._threshold_pending_value() is not None:
+            return skip("有待写入的阈值，本次按 B 优先写阈值；升级请稍后重新长按 B")
         if not self._seen_bthome:
             return skip("本次启动还没看到普通广播，可能是上次遗留的 OTA 模式，未自动升级")
         if self._task is not None and not self._task.done():
@@ -509,6 +615,8 @@ class Ch592OtaCoordinator:
             self.data["vdd_min"] = info.get("vdd_min") or info["vdd"]
         if info.get("protocol"):
             self.data["protocol"] = info["protocol"]
+        if info.get("threshold") is not None:
+            self.data["threshold"] = info["threshold"]
         for key in ("chunk", "verify_chunk", "mtu"):
             if info.get(key) is not None:
                 self.data[key] = info[key]

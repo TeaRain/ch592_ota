@@ -73,3 +73,21 @@ cards:
             text: 确认把燃气值写为 Gas target 里的数值？这会改写设备 DataFlash 里的计费读数。
       - entity: button.ch592_cancel_pending_gas_write
         name: 取消待写入
+
+  # 采样阈值：默认 100，可设 20~2000。调低更灵敏（可能多计），调高更保守（可能漏计）。
+  # 同样先存草稿，点“写入阈值”才写设备；不在 OTA 模式时记为待写入。
+  - type: entities
+    title: 采样阈值校正
+    icon: mdi:tune-variant
+    entities:
+      - entity: number.ch592_pulse_threshold
+        name: 写入为
+      - entity: button.ch592_write_pulse_threshold
+        name: 写入阈值
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.ch592_write_pulse_threshold
+          confirmation:
+            text: 确认把采样阈值写为 Pulse threshold 里的数值？过低会多计、过高会漏计。

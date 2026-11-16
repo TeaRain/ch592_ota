@@ -14,8 +14,8 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 
 | 项目 | 值 |
 |------|-----|
-| 集成版本 | **0.4.8** |
-| 固件版本 | **1.3.1** |
+| 集成版本 | **0.6.0** |
+| 固件版本 | **1.4.1** |
 | 一次升级耗时 | **约 35~40 秒**（128 字节分片 + CRC32 一次校验） |
 | 供电实测 | CR2032 新电池，OTA 负载下 **3.04 V**，全程无下探 |
 | 结论 | **CR2032 可以完成 OTA**；之前跑不下来是耗时太长（约 20 分钟） |
@@ -29,7 +29,7 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 - 长按 B 键 3 秒 → 写 DataFlash 标记 → 复位 → 启动可连接的 OTA 外设，
   广播服务 `0xFEE0`（特征 `0xFEE1`），不再发 BTHome 广播
 - 命令：`0x80` PROGRAM、`0x81` ERASE、`0x82` VERIFY、`0x83` END、`0x84` INFO、
-  `0x85` CRC32（1.3.0 起）
+  `0x85` CRC32（1.3.0 起）、`0x86` 写燃气值（1.4.0 起）、`0x87` 写采样阈值（1.4.1 起）
 - `END` 后切换 ImageFlag 并复位，IAP 把 Image B 拷到 Image A
 
 **集成端**
@@ -154,7 +154,7 @@ https://gitee.com/zigbridge/ch592-gas-broadcaster/raw/master/firmware/manifest.j
 action: ch592_ota.flash
 data:
   firmware: www/firmware/ch592_ota.bin
-  version: "1.3.1"
+  version: "1.4.1"
   chunk: 128      # 16 的倍数，16~240；默认按设备能力自动选
 ```
 
@@ -188,6 +188,31 @@ data:
 > `update` 实体仍会显示有新版本，之后再按一次 B 即可升级。
 > 升级进行中点写入会被拒绝（避免两个任务抢同一个连接）。
 
+## 采样阈值校正（0.6.0 + 固件 1.4.1）
+
+不同表型、玻璃罩脏污、安装距离都会影响红外采样判据，现在阈值可以远程调整，
+不用改固件：
+
+1. `number.*_pulse_threshold` 填目标值（20~2000，默认 100）——**草稿，不写设备**；
+2. 点 `button.*_write_pulse_threshold`：
+   - 设备已在 OTA 模式 → 立即写入（写 DataFlash，**不复位**）；
+   - 不在 OTA 模式 → 记为「待写入」，长按 B 3 秒后集成先写阈值、跳过自动升级；
+3. 取消：`button.*_cancel_pending_writes` 或 `ch592_ota.cancel_threshold`。
+
+```yaml
+action: ch592_ota.set_threshold
+data:
+  value: 120     # 20~2000
+```
+
+设备端把阈值存在 DataFlash **块 3（0x3000）**，写入后读回校验，非法值回 `0xFE`，
+校验失败回 `0xFF`，旧值不受影响。阈值写完后设备**不复位**，所以同一次 OTA 会话里
+还可以接着写燃气值（集成会先写阈值、再写燃气，后者负责复位）。
+
+调参方向：阈值越低越灵敏，可能把噪声计成脉冲（读数虚增）；越高越保守，可能漏计数。
+实测余量 190~460，默认 100 已经留足余量，一般只在换表型或环境变化时微调 80~300。
+`sensor.*_ota_status` 的 `device_threshold` 属性显示设备当前生效值。
+
 ## 实体与观测属性
 
 | 实体 | 说明 |
@@ -201,7 +226,9 @@ data:
 | `button.<device>_check_for_updates` | 立即检查固件清单 |
 | `number.<device>_gas_target` | 要写入的燃气值（草稿，不写设备） |
 | `button.<device>_write_gas_value` | 写入燃气值 / 记为待写入 |
-| `button.<device>_cancel_pending_gas_write` | 取消待写入 |
+| `number.<device>_pulse_threshold` | 采样阈值草稿（20~2000，默认 100） |
+| `button.<device>_write_pulse_threshold` | 写入阈值 / 记为待写入 |
+| `button.<device>_cancel_pending_writes` | 取消所有待写入（燃气值 + 阈值） |
 
 `sensor.<device>_ota_status` 的属性是排查问题的主要入口：
 
@@ -212,7 +239,9 @@ data:
 | `chunk` / `verify_chunk` / `mtu` | 本次实际使用的分片与 MTU |
 | `vdd_mv` / `vdd_min_mv` | 设备在 OTA 模式测到的电压（上传中每 16 KB 采一次），以及整个过程的最低值 |
 | `duration_s` | 本次升级总耗时（秒） |
-| `device_protocol` | 设备 OTA 协议版本（1.3.x = 4） |
+| `device_protocol` | 设备 OTA 协议版本（1.3.x = 4、1.4.0 = 5、1.4.1 = 6） |
+| `device_threshold` | 设备当前采样阈值（≥1.4.1，连接时从 `INFO` 读取） |
+| `threshold_pending` / `threshold_result` | 待写入的阈值与最近一次结果 |
 
 `binary_sensor.*_ota_mode` 的属性：
 
@@ -287,7 +316,9 @@ python tools/publish_firmware.py --repo . --notes "改了什么" --push
 | 0.4.8 | `reload_code` 热重载服务 |
 | 0.4.9 | 未配置固件路径时本地文件缺失不再告警 |
 | 0.5.0 | 燃气值校正：number 草稿 + 写入按钮 + 待写入优先级 |
+| 0.6.0 | 采样阈值校正（0x87）：number 草稿 + 写入按钮 + 设备阈值显示 |
 
 固件侧：1.2.9 引入按页拆分的 PROGRAM；1.3.0 引入 `0x85` CRC32 校验与 OTA 模式
-电压上报；1.3.1 为电池实测版本；1.4.0 增加 `0x86` 燃气值写入。完整记录见
+电压上报；1.3.1 为电池实测版本；1.4.0 增加 `0x86` 燃气值写入；1.4.1 增加
+`0x87` 采样阈值写入（DataFlash 块 3，默认 100，可设 20~2000）。完整记录见
 [CHANGELOG.md](CHANGELOG.md)。

@@ -28,9 +28,13 @@ from .const import (
     DOMAIN,
     SERVICE_ABORT,
     SERVICE_CANCEL_GAS,
+    SERVICE_CANCEL_THRESHOLD,
     SERVICE_FLASH,
     SERVICE_RELOAD_CODE,
     SERVICE_SET_GAS,
+    SERVICE_SET_THRESHOLD,
+    THRESHOLD_MAX,
+    THRESHOLD_MIN,
 )
 from .firmware import FirmwareCloudCoordinator
 
@@ -55,6 +59,15 @@ GAS_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_ADDRESS): cv.string,
         vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0, max=99999.999)),
+    }
+)
+
+THRESHOLD_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_ADDRESS): cv.string,
+        vol.Required("value"): vol.All(
+            vol.Coerce(int), vol.Range(min=THRESHOLD_MIN, max=THRESHOLD_MAX)
+        ),
     }
 )
 
@@ -190,6 +203,28 @@ def _async_register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_CANCEL_GAS,
         async_handle_cancel_gas,
+        schema=ABORT_SCHEMA,
+    )
+
+    async def async_handle_set_threshold(call: ServiceCall) -> dict[str, object]:
+        coordinator = _get_coordinator(hass, call.data.get(CONF_ADDRESS))
+        return await coordinator.async_set_threshold(int(call.data["value"]))
+
+    async def async_handle_cancel_threshold(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass, call.data.get(CONF_ADDRESS))
+        coordinator.cancel_threshold()
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_THRESHOLD,
+        async_handle_set_threshold,
+        schema=THRESHOLD_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CANCEL_THRESHOLD,
+        async_handle_cancel_threshold,
         schema=ABORT_SCHEMA,
     )
     hass.services.async_register(DOMAIN, SERVICE_RELOAD_CODE, async_handle_reload_code)
