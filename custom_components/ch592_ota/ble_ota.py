@@ -38,6 +38,10 @@ from .const import (
     ERASE_TIMEOUT,
     IMAGE_A_START,
     IMAGE_SIZE,
+    CMD_IAP_CRC32,
+    CMD_IAP_SET_GAS,
+    GAS_MAX_UNITS,
+    GAS_SET_MAGIC,
     MIN_CHUNK,
     OTA_CHAR_UUID,
     OTA_CHUNK_MAX,
@@ -49,7 +53,6 @@ from .const import (
     STATUS_TIMEOUT,
     VDD_SAMPLE_WINDOWS,
     VERIFY_CHUNK_MAX,
-    CMD_IAP_CRC32,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -477,3 +480,69 @@ class Ch592OtaClient:
         except (BleakError, EOFError):
             # The device resets immediately after CMD_IAP_END.
             pass
+
+
+async def async_set_gas(
+    hass: HomeAssistant, address: str, value_units: int
+) -> int:
+    """Write the gas reading over the OTA channel (device must be in OTA mode).
+
+    The payload carries a fixed magic so a stray packet can never rewrite the
+    billing counter, and the device reboots itself a moment after replying.
+    Returns the value written, in 0.001 m³ units.
+    """
+    if not 0 <= value_units < GAS_MAX_UNITS:
+        raise OtaError(f"燃气值超出范围：{value_units / 1000:.3f} m³")
+
+    device = async_ble_device_from_address(hass, address, connectable=True)
+    if device is None:
+        raise OtaError(
+            "未找到可连接的设备。请长按 B 键 3 秒进入 OTA 模式后重试。"
+        )
+
+    client: BleakClient | None = None
+    try:
+        client = await establish_connection(
+            BleakClientWithServiceCache,
+            device,
+            address,
+            max_attempts=3,
+            timeout=30.0,
+        )
+        ota_char = None
+        for service in client.services or []:
+            for char in service.characteristics:
+                if char.uuid.lower() == OTA_CHAR_UUID:
+                    ota_char = char
+                    break
+            if ota_char is not None:
+                break
+        if ota_char is None:
+            raise OtaError("设备上没有找到 OTA 特征值，请确认已进入 OTA 模式")
+
+        payload = (
+            bytes((CMD_IAP_SET_GAS, 0))
+            + int(value_units).to_bytes(4, "little")
+            + GAS_SET_MAGIC.to_bytes(2, "little")
+        )
+        await client.write_gatt_char(ota_char, payload, response=True)
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + STATUS_TIMEOUT
+        data = b""
+        while loop.time() < deadline:
+            data = await client.read_gatt_char(ota_char)
+            if data:
+                break
+            await asyncio.sleep(0.05)
+        if not data:
+            raise OtaError("设备没有响应，写入结果未知")
+        if data[0] != OTA_STATUS_OK:
+            raise OtaError(f"设备返回错误状态 0x{data[0]:02X}")
+        return int(value_units)
+    finally:
+        if client is not None and client.is_connected:
+            try:
+                await asyncio.wait_for(client.disconnect(), 10)
+            except (TimeoutError, BleakError, EOFError):
+                pass

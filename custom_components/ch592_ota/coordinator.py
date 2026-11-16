@@ -19,14 +19,16 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 
-from .ble_ota import Ch592OtaClient, OtaError, OtaMtuError
-from .bthome import has_bthome_data, parse_bthome_version
+from .ble_ota import Ch592OtaClient, OtaError, OtaMtuError, async_set_gas
+from .bthome import has_bthome_data, parse_bthome_fields
 from .const import (
     CONF_AUTO_INSTALL,
     CONF_FIRMWARE,
     CONF_VERSION,
     DEFAULT_AUTO_INSTALL,
     DEFAULT_FIRMWARE,
+    GAS_MAX_UNITS,
+    GAS_SET_PENDING_SECONDS,
     IMAGE_SIZE,
     OTA_SERVICE_UUID,
     REBOOT_TIMEOUT,
@@ -74,6 +76,13 @@ class Ch592OtaCoordinator:
         # Set once a normal BTHome advertisement arrives, so a leftover OTA
         # mode from a previous session does not trigger an upgrade by itself.
         self._seen_bthome = False
+        # Gas value written over the OTA channel: draft, armed intent, result.
+        self.data["gas_value"] = None
+        self.data["gas_target"] = None
+        self.data["gas_pending"] = None
+        self.data["gas_result"] = None
+        self._gas_pending_until = 0.0
+        self._gas_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------- lifecycle
 
@@ -135,15 +144,27 @@ class Ch592OtaCoordinator:
                 )
                 self.data["ota_mode"] = True
                 self._notify()
-                self._maybe_auto_install()
+                # An armed gas write wins over an automatic upgrade: the user
+                # pressed B for that, and a finished upgrade would reboot the
+                # device out of OTA mode before the value could be written.
+                if self._gas_pending_value() is not None:
+                    self._maybe_apply_gas()
+                else:
+                    self._maybe_auto_install()
         else:
-            version = parse_bthome_version(service_info)
+            fields = parse_bthome_fields(service_info)
+            version = fields.get("version")
+            gas = fields.get("gas")
+            if gas is not None:
+                self.data["gas_value"] = int(gas)  # type: ignore[arg-type]
             if version is not None:
                 self._seen_bthome = True
-                self.data["firmware_version"] = version
+                self.data["firmware_version"] = str(version)
                 self.data["ads"] = int(self.data["ads"]) + 1
                 self.data["last_seen"] = datetime.now(UTC)
                 self.data["ota_mode"] = False
+                self._notify()
+            elif gas is not None:
                 self._notify()
 
         # Throttled refresh so the diagnostic attributes stay current.
@@ -170,6 +191,102 @@ class Ch592OtaCoordinator:
         )
         return has_ota_uuid and not has_bthome_data(service_info)
 
+    # ----------------------------------------------------------- gas value
+
+    def _gas_pending_value(self) -> int | None:
+        """The armed gas value, or None when nothing is armed / it expired."""
+        value = self.data.get("gas_pending")
+        if value is None:
+            return None
+        now = asyncio.get_running_loop().time()
+        if now > self._gas_pending_until:
+            self.data["gas_pending"] = None
+            self.data["gas_result"] = "待写入已超时取消"
+            self._notify()
+            return None
+        return int(value)  # type: ignore[arg-type]
+
+    @callback
+    def set_gas_target(self, value_units: int) -> None:
+        """Store the draft value; nothing is written to the device here."""
+        self.data["gas_target"] = int(value_units)
+        self._notify()
+
+    @callback
+    def cancel_gas(self) -> None:
+        self.data["gas_pending"] = None
+        self.data["gas_result"] = "已取消待写入"
+        self._gas_pending_until = 0.0
+        self._notify()
+
+    async def async_set_gas(self, value_units: int) -> dict[str, object]:
+        """Write now when the device is in OTA mode, otherwise arm it."""
+        if not 0 <= value_units < GAS_MAX_UNITS:
+            raise HomeAssistantError(
+                f"燃气值超出范围：{value_units / 1000:.3f} m³"
+            )
+        if self._task is not None and not self._task.done():
+            raise HomeAssistantError("升级进行中，请等升级完成后再写入燃气值")
+
+        self.data["gas_target"] = int(value_units)
+        if self.data.get("ota_mode"):
+            await self._async_write_gas(value_units)
+            return {"result": "written", "value": value_units / 1000}
+
+        self.data["gas_pending"] = int(value_units)
+        self.data["gas_result"] = None
+        self._gas_pending_until = (
+            asyncio.get_running_loop().time() + GAS_SET_PENDING_SECONDS
+        )
+        self._notify()
+        return {
+            "result": "armed",
+            "value": value_units / 1000,
+            "note": "请长按 B 键 3 秒，进入 OTA 模式后会写入（15 分钟内有效）",
+        }
+
+    async def _async_write_gas(self, value_units: int) -> None:
+        self.data["gas_result"] = "writing"
+        self._notify()
+        try:
+            await async_set_gas(self.hass, self.address, value_units)
+        except Exception as err:  # noqa: BLE001 - surface every failure
+            self.data["gas_result"] = f"写入失败: {err}"
+            self._notify()
+            raise HomeAssistantError(f"写入燃气值失败: {err}") from err
+        self.data.update(
+            gas_pending=None,
+            gas_result=f"已写入 {value_units / 1000:.3f} m³",
+            ota_mode=False,
+        )
+        self._gas_pending_until = 0.0
+        self._notify()
+
+    @callback
+    def _maybe_apply_gas(self) -> None:
+        value = self._gas_pending_value()
+        if value is None:
+            return
+        if self._task is not None and not self._task.done():
+            return
+        if self._gas_task is not None and not self._gas_task.done():
+            return
+        self._gas_task = self.hass.async_create_task(
+            self._async_auto_write_gas(value)
+        )
+
+    async def _async_auto_write_gas(self, value_units: int) -> None:
+        try:
+            # Give the device a moment to switch from advertising to connectable.
+            await asyncio.sleep(2)
+            await self._async_write_gas(value_units)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - already recorded in gas_result
+            _LOGGER.exception("自动写入燃气值失败")
+        finally:
+            self._gas_task = None
+
     # ------------------------------------------------------- auto update
 
     @property
@@ -193,6 +310,8 @@ class Ch592OtaCoordinator:
 
         if not self.auto_install:
             return skip("选项 auto_install_on_ota_mode 已关闭")
+        if self._gas_pending_value() is not None:
+            return skip("有待写入的燃气值，本次按 B 优先写燃气值；升级请稍后重新长按 B")
         if not self._seen_bthome:
             return skip("本次启动还没看到普通广播，可能是上次遗留的 OTA 模式，未自动升级")
         if self._task is not None and not self._task.done():

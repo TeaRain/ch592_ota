@@ -160,6 +160,34 @@ data:
 
 取消升级：`button.*_abort_ota` 或 `ch592_ota.abort`。
 
+## 燃气值校正（0.5.0 + 固件 1.4.0）
+
+不用再长按 +/- 刷数值，可以在 HA 里直接把读数写进去。
+
+1. 在 `number.*_gas_target` 里填目标值（单位 m³，0.001 分辨率）——
+   **它只是草稿，填了不会写设备**；
+2. 点 `button.*_write_gas_value`：
+   - 设备已在 OTA 模式 → 立刻写入并复位；
+   - 设备不在 OTA 模式 → 记为「待写入」（15 分钟有效），此时长按 B 3 秒，
+     集成看到 OTA 广播后会**先写燃气值、不升级**；
+3. 想放弃待写入：点 `button.*_cancel_pending_gas_write` 或调
+   `ch592_ota.cancel_gas`。
+
+服务方式：
+
+```yaml
+action: ch592_ota.set_gas
+data:
+  value: 3050.79     # m³
+```
+
+设备端行为：新记录写进**较旧的那个 DataFlash 槽**（`seq + 1`），读回校验通过才回
+成功，然后约 0.2 秒后复位让广播器加载新值。写入失败时旧值不受影响。
+
+> **优先级规则**：有待写入的燃气值时，按 B 只写燃气值、不自动升级；
+> `update` 实体仍会显示有新版本，之后再按一次 B 即可升级。
+> 升级进行中点写入会被拒绝（避免两个任务抢同一个连接）。
+
 ## 实体与观测属性
 
 | 实体 | 说明 |
@@ -171,6 +199,9 @@ data:
 | `sensor.<device>_firmware_version` | 设备通过 BTHome `0x53` 报告的固件版本 |
 | `button.<device>_abort_ota` | 取消升级 |
 | `button.<device>_check_for_updates` | 立即检查固件清单 |
+| `number.<device>_gas_target` | 要写入的燃气值（草稿，不写设备） |
+| `button.<device>_write_gas_value` | 写入燃气值 / 记为待写入 |
+| `button.<device>_cancel_pending_gas_write` | 取消待写入 |
 
 `sensor.<device>_ota_status` 的属性是排查问题的主要入口：
 
@@ -254,6 +285,9 @@ python tools/publish_firmware.py --repo . --notes "改了什么" --push
 | 0.4.5 | 上传过程中持续采样电压 + `vdd_min_mv` |
 | 0.4.7 | 用 `0xFCD2` 判定广播类型，修复升级成功却报失败 |
 | 0.4.8 | `reload_code` 热重载服务 |
+| 0.4.9 | 未配置固件路径时本地文件缺失不再告警 |
+| 0.5.0 | 燃气值校正：number 草稿 + 写入按钮 + 待写入优先级 |
 
 固件侧：1.2.9 引入按页拆分的 PROGRAM；1.3.0 引入 `0x85` CRC32 校验与 OTA 模式
-电压上报；1.3.1 为电池实测版本。完整记录见 [CHANGELOG.md](CHANGELOG.md)。
+电压上报；1.3.1 为电池实测版本；1.4.0 增加 `0x86` 燃气值写入。完整记录见
+[CHANGELOG.md](CHANGELOG.md)。

@@ -42,3 +42,36 @@ abort:
       example: "AA:BB:CC:DD:EE:FF"
       selector:
         text:
+set_gas:
+  name: Set gas reading
+  description: >-
+    Write the gas reading into the device's DataFlash over the OTA channel.
+    If the device is not in OTA mode the value is armed for 15 minutes: hold
+    button B for 3 seconds and the integration writes it instead of upgrading.
+  fields:
+    address:
+      name: Bluetooth address
+      description: Target device address. Optional when only one CH592 is configured.
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:
+    value:
+      name: Gas reading
+      description: The value to write, in m³ (0.001 m³ resolution).
+      example: 3050.79
+      selector:
+        number:
+          min: 0
+          max: 99999.999
+          step: 0.001
+          mode: box
+cancel_gas:
+  name: Cancel pending gas write
+  description: Drop an armed gas write so pressing B upgrades firmware again.
+  fields:
+    address:
+      name: Bluetooth address
+      description: Target device address. Optional when only one CH592 is configured.
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:

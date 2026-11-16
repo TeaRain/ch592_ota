@@ -27,14 +27,16 @@ from .const import (
     DEFAULT_MANIFEST_URLS,
     DOMAIN,
     SERVICE_ABORT,
+    SERVICE_CANCEL_GAS,
     SERVICE_FLASH,
     SERVICE_RELOAD_CODE,
+    SERVICE_SET_GAS,
 )
 from .firmware import FirmwareCloudCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["binary_sensor", "button", "sensor", "update"]
+PLATFORMS = ["binary_sensor", "button", "number", "sensor", "update"]
 
 FLASH_SCHEMA = vol.Schema(
     {
@@ -48,6 +50,13 @@ FLASH_SCHEMA = vol.Schema(
 )
 
 ABORT_SCHEMA = vol.Schema({vol.Optional(CONF_ADDRESS): cv.string})
+
+GAS_SCHEMA = vol.Schema(
+    {
+        vol.Optional(CONF_ADDRESS): cv.string,
+        vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0, max=99999.999)),
+    }
+)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -159,6 +168,28 @@ def _async_register_services(hass: HomeAssistant) -> None:
         DOMAIN,
         SERVICE_ABORT,
         async_handle_abort,
+        schema=ABORT_SCHEMA,
+    )
+    async def async_handle_set_gas(call: ServiceCall) -> dict[str, object]:
+        coordinator = _get_coordinator(hass, call.data.get(CONF_ADDRESS))
+        units = int(round(float(call.data["value"]) * 1000))
+        return await coordinator.async_set_gas(units)
+
+    async def async_handle_cancel_gas(call: ServiceCall) -> None:
+        coordinator = _get_coordinator(hass, call.data.get(CONF_ADDRESS))
+        coordinator.cancel_gas()
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_GAS,
+        async_handle_set_gas,
+        schema=GAS_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CANCEL_GAS,
+        async_handle_cancel_gas,
         schema=ABORT_SCHEMA,
     )
     hass.services.async_register(DOMAIN, SERVICE_RELOAD_CODE, async_handle_reload_code)

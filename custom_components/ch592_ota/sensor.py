@@ -114,6 +114,8 @@ class Ch592OtaStatusSensor(Ch592OtaEntity):
             "chunk": self.coordinator.data.get("chunk"),
             "verify_chunk": self.coordinator.data.get("verify_chunk"),
             "duration_s": self.coordinator.data.get("duration_s"),
+            "gas_pending": self.coordinator.data.get("gas_pending"),
+            "gas_result": self.coordinator.data.get("gas_result"),
         }
 
 

@@ -2,6 +2,7 @@
 #
 # 实体 ID 按这台设备当前注册的实际 ID 写；换设备/改过名字时请按
 # 设置 → 设备与服务 → 该设备 页面里的 ID 调整。
+# 新加的 number / button 实体 ID 跟随设备名，例如 number.<device>_gas_target。
 
 type: vertical-stack
 cards:
@@ -50,3 +51,25 @@ cards:
         name: 立即检查更新
       - entity: button.ch592_abort_ota
         name: 取消升级
+
+  # 燃气值校正：先在 number 里填目标值（只存草稿，不写设备），再点“写入燃气值”。
+  # 设备不在 OTA 模式时点写入 → 记为待写入，长按 B 3 秒后写入（优先于自动升级）。
+  - type: entities
+    title: 燃气值校正
+    icon: mdi:counter
+    entities:
+      - entity: sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_gas
+        name: 设备当前
+      - entity: number.ch592_gas_target
+        name: 写入为
+      - entity: button.ch592_write_gas_value
+        name: 写入燃气值
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.ch592_write_gas_value
+          confirmation:
+            text: 确认把燃气值写为 Gas target 里的数值？这会改写设备 DataFlash 里的计费读数。
+      - entity: button.ch592_cancel_pending_gas_write
+        name: 取消待写入

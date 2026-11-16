@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0
+
+配合固件 1.4.0，可以在 HA 里直接写燃气值，不用再长按 +/-：
+
+- 新增 `number.*_gas_target`（草稿，**不会自己写设备**）、
+  `button.*_write_gas_value`、`button.*_cancel_pending_gas_write`
+- 新增服务 `ch592_ota.set_gas` / `ch592_ota.cancel_gas`
+- **待写入优先级**：设备不在 OTA 模式时点写入 → 记为待写入（15 分钟）；
+  长按 B 后集成**先写燃气值、跳过自动升级**。升级进行中点写入会被拒绝
+- `sensor.*_ota_status` 增加 `gas_pending` / `gas_result` 属性；
+  `number` 实体带 `device_value_m3`（设备当前读数）
+- 顺带解析 BTHome `0x4C` 燃气对象，草稿默认显示设备当前值
+
+设备要求：固件 ≥ 1.4.0（`INFO` 能力位 bit2）。老固件调用会报「设备返回错误状态」。
+
 ## 0.4.9
 
 - 本地固件文件缺失时不再打 warning（云端清单已成为主力，本地镜像只是兜底）。

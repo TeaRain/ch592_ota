@@ -78,11 +78,15 @@ def has_bthome_data(service_info: BluetoothServiceInfoBleak) -> bool:
     return _service_data(service_info) is not None
 
 
-def parse_bthome_version(service_info: BluetoothServiceInfoBleak) -> str | None:
-    """Return the value of object 0x53 (text) from a BTHome v2 advertisement."""
+def parse_bthome_fields(service_info: BluetoothServiceInfoBleak) -> dict[str, object]:
+    """Return the objects this integration cares about from a BTHome v2 ad.
+
+    ``version`` is the 0x53 text object, ``gas`` the 0x4C counter in 0.001 m³.
+    """
+    fields: dict[str, object] = {}
     data = _service_data(service_info)
     if not data or len(data) < 2:
-        return None
+        return fields
 
     # First byte is the BTHome device-information byte (0x40 for v2, unencrypted).
     index = 1
@@ -93,20 +97,28 @@ def parse_bthome_version(service_info: BluetoothServiceInfoBleak) -> str | None:
         if fixed is None:
             # Variable-size object: the next byte is the data length.
             if index >= len(data):
-                return None
+                return fields
             length = data[index]
             index += 1
         else:
             length = fixed
 
         if index + length > len(data):
-            return None
+            return fields
         value = data[index : index + length]
         index += length
 
         if object_id == 0x53:
             try:
-                return value.decode("utf-8").rstrip("\x00")
+                fields["version"] = value.decode("utf-8").rstrip("\x00")
             except UnicodeDecodeError:
-                return None
-    return None
+                pass
+        elif object_id == 0x4C and len(value) == 4:
+            fields["gas"] = int.from_bytes(value, "little")
+    return fields
+
+
+def parse_bthome_version(service_info: BluetoothServiceInfoBleak) -> str | None:
+    """Return the value of object 0x53 (text) from a BTHome v2 advertisement."""
+    version = parse_bthome_fields(service_info).get("version")
+    return str(version) if version is not None else None

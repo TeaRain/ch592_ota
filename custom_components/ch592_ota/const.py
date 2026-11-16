@@ -31,6 +31,8 @@ MANIFEST_UPDATE_INTERVAL_MINUTES = 30
 
 SERVICE_FLASH = "flash"
 SERVICE_ABORT = "abort"
+SERVICE_SET_GAS = "set_gas"
+SERVICE_CANCEL_GAS = "cancel_gas"
 # Development helper: re-import the integration from disk without a HA restart.
 SERVICE_RELOAD_CODE = "reload_code"
 
@@ -50,6 +52,13 @@ CMD_IAP_VERIFY = 0x82
 CMD_IAP_END = 0x83
 CMD_IAP_INFO = 0x84
 CMD_IAP_CRC32 = 0x85
+CMD_IAP_SET_GAS = 0x86
+
+# Gas value protocol: payload carries a fixed magic so a stray packet can never
+# rewrite the billing counter. Values are in 0.001 m³ units.
+GAS_SET_MAGIC = 0x5AA5
+GAS_MAX_UNITS = 100_000_000  # firmware rolls over at 100 000 m³
+GAS_SET_PENDING_SECONDS = 15 * 60
 
 OTA_STATUS_OK = 0x00
 OTA_STATUS_UNKNOWN_CMD = 0xFE
@@ -74,6 +83,7 @@ VDD_SAMPLE_WINDOWS = 4
 OTA_CHUNK_MAX = 128
 OTA_FEATURE_PAGE_SPLIT = 0x01
 OTA_FEATURE_CRC32 = 0x02
+OTA_FEATURE_SET_GAS = 0x04
 ERASE_TIMEOUT = 60
 STATUS_TIMEOUT = 20
 REBOOT_TIMEOUT = 180
