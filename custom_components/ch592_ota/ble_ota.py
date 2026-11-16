@@ -49,6 +49,7 @@ from .const import (
     OTA_FEATURE_PAGE_SPLIT,
     OTA_IMAGE_MAGIC,
     OTA_STATUS_OK,
+    OTA_STATUS_UNKNOWN_CMD,
     PROGRAM_STATUS_WINDOW,
     STATUS_TIMEOUT,
     VDD_SAMPLE_WINDOWS,
@@ -537,6 +538,10 @@ async def async_set_gas(
             await asyncio.sleep(0.05)
         if not data:
             raise OtaError("设备没有响应，写入结果未知")
+        if data[0] == OTA_STATUS_UNKNOWN_CMD:
+            raise OtaError(
+                "设备固件不支持写燃气值（需要 1.4.0 及以上），请先升级固件"
+            )
         if data[0] != OTA_STATUS_OK:
             raise OtaError(f"设备返回错误状态 0x{data[0]:02X}")
         return int(value_units)
