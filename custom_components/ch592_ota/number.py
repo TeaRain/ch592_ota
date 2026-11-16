@@ -42,6 +42,7 @@ class Ch592GasTargetNumber(NumberEntity):
     _attr_has_entity_name = True
     _attr_name = "Gas target"
     _attr_icon = "mdi:counter"
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_native_min_value = 0
     _attr_native_max_value = GAS_MAX_UNITS / 1000  # 99 999.999 m³
     _attr_native_step = 0.001

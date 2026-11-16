@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+
+- 设备页实体重新分组，数值和写入按钮放在同一组：
+  - `Gas target`、`Pulse threshold`、`Write gas value`、`Write pulse threshold`
+    全部放进「配置」，不再一半在「控制」、一半在「配置」
+  - `Abort OTA` 回到「控制」，配置区只放与数值相关的实体
+  - `Cancel pending writes` 保持「配置」，且只在有待写入时出现
+
 ## 0.6.0
 
 配合固件 1.4.1，采样阈值可以远程调整（默认 100，可设 20~2000）：

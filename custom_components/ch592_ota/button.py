@@ -75,7 +75,6 @@ class Ch592OtaAbortButton(ButtonEntity):
     _attr_name = "Abort OTA"
     _attr_icon = "mdi:cancel"
     _attr_should_poll = False
-    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: Ch592OtaCoordinator) -> None:
         self.coordinator = coordinator
@@ -106,6 +105,7 @@ class Ch592WriteGasButton(ButtonEntity):
     _attr_name = "Write gas value"
     _attr_icon = "mdi:content-save-edit"
     _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: Ch592OtaCoordinator) -> None:
         self.coordinator = coordinator
@@ -147,6 +147,7 @@ class Ch592WriteThresholdButton(ButtonEntity):
     _attr_name = "Write pulse threshold"
     _attr_icon = "mdi:tune"
     _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: Ch592OtaCoordinator) -> None:
         self.coordinator = coordinator
