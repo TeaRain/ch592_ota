@@ -1,8 +1,16 @@
 # Changelog
 
+## 0.6.4
+
+- 移除 0.6.3 的 `Gas total (guarded)` 实体、`Reset gas guard` 按钮和
+  `ch592_ota.reset_gas_guard` 服务
+- 原因：统计归属消费侧，不应由 OTA 集成提供；README 给出等价的模板传感器
+  示例（只增不减，回退持续 10 分钟才接受），Derivative / utility_meter 指向它
+- 集成保持 OTA、写燃气值、写阈值三项职责
+
 ## 0.6.3
 
-- 新增 `sensor.*_gas_total_guarded`：只增不减的燃气累计值，专供消耗统计
+- （已由 0.6.4 移出集成）新增 `sensor.*_gas_total_guarded`：只增不减的燃气累计值
   - HA 重启时会重放扫描器保存的旧广播，固件 ≤ 1.4.1 掉电也可能回滚到旧
     DataFlash 记录；原始 `0x4C` 值向后跳会让 Derivative 出现负速率、
     utility_meter 把回跳后的回升记成消耗

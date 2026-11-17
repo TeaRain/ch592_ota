@@ -31,7 +31,6 @@ from .const import (
     SERVICE_CANCEL_THRESHOLD,
     SERVICE_FLASH,
     SERVICE_RELOAD_CODE,
-    SERVICE_RESET_GAS_GUARD,
     SERVICE_SET_GAS,
     SERVICE_SET_THRESHOLD,
     THRESHOLD_MAX,
@@ -60,15 +59,6 @@ GAS_SCHEMA = vol.Schema(
     {
         vol.Optional(CONF_ADDRESS): cv.string,
         vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0, max=99999.999)),
-    }
-)
-
-RESET_GAS_GUARD_SCHEMA = vol.Schema(
-    {
-        vol.Optional(CONF_ADDRESS): cv.string,
-        vol.Optional("value"): vol.All(
-            vol.Coerce(float), vol.Range(min=0, max=99999.999)
-        ),
     }
 )
 
@@ -236,20 +226,6 @@ def _async_register_services(hass: HomeAssistant) -> None:
         SERVICE_CANCEL_THRESHOLD,
         async_handle_cancel_threshold,
         schema=ABORT_SCHEMA,
-    )
-
-    async def async_handle_reset_gas_guard(call: ServiceCall) -> None:
-        coordinator = _get_coordinator(hass, call.data.get(CONF_ADDRESS))
-        value = call.data.get("value")
-        coordinator.reset_gas_guard(
-            None if value is None else int(round(float(value) * 1000))
-        )
-
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_RESET_GAS_GUARD,
-        async_handle_reset_gas_guard,
-        schema=RESET_GAS_GUARD_SCHEMA,
     )
     hass.services.async_register(DOMAIN, SERVICE_RELOAD_CODE, async_handle_reload_code)
 

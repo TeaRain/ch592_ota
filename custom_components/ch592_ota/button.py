@@ -25,7 +25,6 @@ async def async_setup_entry(
             Ch592OtaAbortButton(coordinator),
             Ch592WriteGasButton(coordinator),
             Ch592WriteThresholdButton(coordinator),
-            Ch592ResetGasGuardButton(coordinator),
             Ch592CancelPendingButton(coordinator),
         ]
     )
@@ -220,43 +219,3 @@ class Ch592CancelPendingButton(ButtonEntity):
         self.coordinator.cancel_gas()
         self.coordinator.cancel_threshold()
 
-
-class Ch592ResetGasGuardButton(ButtonEntity):
-    """Accept the device's current reading as the guarded total's baseline."""
-
-    _attr_has_entity_name = True
-    _attr_name = "Reset gas guard"
-    _attr_icon = "mdi:backup-restore"
-    _attr_should_poll = False
-    _attr_entity_category = EntityCategory.CONFIG
-
-    def __init__(self, coordinator: Ch592OtaCoordinator) -> None:
-        self.coordinator = coordinator
-        self._address = coordinator.address
-        self._attr_unique_id = f"{self._address}_reset_gas_guard"
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self.async_write_ha_state)
-        )
-
-    @property
-    def device_info(self):
-        return build_device_info(self.coordinator)
-
-    @property
-    def available(self) -> bool:
-        return self.coordinator.data.get("gas_value") is not None
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        raw = self.coordinator.data.get("gas_value")
-        return {
-            "current_value_m3": (
-                round(int(raw) / 1000, 3) if raw is not None else None
-            ),
-            "blocked_since": self.coordinator.data.get("gas_guard_blocked_at"),
-        }
-
-    async def async_press(self) -> None:
-        self.coordinator.reset_gas_guard()

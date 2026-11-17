@@ -89,11 +89,6 @@ class Ch592OtaCoordinator:
         self.data["gas_target"] = None
         self.data["gas_pending"] = None
         self.data["gas_result"] = None
-        # Monotonic total: never moves backwards on a stale replay or a
-        # power-loss rollback; reset explicitly after a real correction.
-        self.data["gas_guard_value"] = None
-        self.data["gas_guard_blocked"] = None
-        self.data["gas_guard_blocked_at"] = None
         self._gas_pending_until = 0.0
         self._gas_task: asyncio.Task | None = None
         # Pulse threshold (firmware >= 1.4.1): device value, draft, armed intent.
@@ -180,7 +175,6 @@ class Ch592OtaCoordinator:
             gas = fields.get("gas")
             if gas is not None:
                 self.data["gas_value"] = int(gas)  # type: ignore[arg-type]
-                self._update_gas_guard(int(gas))  # type: ignore[arg-type]
             if version is not None:
                 self._seen_bthome = True
                 self.data["firmware_version"] = str(version)
@@ -214,57 +208,6 @@ class Ch592OtaCoordinator:
             for u in service_info.service_data
         )
         return has_ota_uuid and not has_bthome_data(service_info)
-
-    # ------------------------------------------------------ guarded gas total
-
-    def seed_gas_guard(self, raw_value: int | None) -> None:
-        """Seed the monotonic guard from the restored sensor state.
-
-        The first advertisement after a restart can be a stale replay, which
-        may already have seeded a lower value; raise the guard to the restored
-        one so the sensor does not start with a backward jump.
-        """
-        if raw_value is None:
-            return
-        guard = self.data.get("gas_guard_value")
-        if guard is None or int(raw_value) > int(guard):  # type: ignore[arg-type]
-            self.data["gas_guard_value"] = int(raw_value)
-            self.data["gas_guard_blocked"] = None
-            self.data["gas_guard_blocked_at"] = None
-            self._notify()
-
-    def reset_gas_guard(self, value_units: int | None = None) -> None:
-        """Adopt the current (or given) reading as the new baseline."""
-        raw = value_units if value_units is not None else self.data.get("gas_value")
-        if raw is None:
-            return
-        self.data["gas_guard_value"] = int(raw)
-        self.data["gas_guard_blocked"] = None
-        self.data["gas_guard_blocked_at"] = None
-        self._notify()
-
-    def _update_gas_guard(self, raw: int) -> None:
-        """Accept increases; hold the last value on a backward jump.
-
-        A backward jump is either an old advertisement replayed by HA after a
-        restart or a DataFlash rollback after a power loss. Both would make
-        the consumption statistics go negative. Real downward corrections go
-        through ``reset_gas_guard`` (button, service or a gas write).
-        """
-        guard = self.data.get("gas_guard_value")
-        if guard is None:
-            self.data["gas_guard_value"] = raw
-            return
-        guard = int(guard)  # type: ignore[arg-type]
-        if raw >= guard or (guard >= 99_990_000 and raw < 10_000):
-            # Normal increase, or the 100 000 m3 rollover.
-            self.data["gas_guard_value"] = raw
-            self.data["gas_guard_blocked"] = None
-            self.data["gas_guard_blocked_at"] = None
-            return
-        if self.data.get("gas_guard_blocked") != raw:
-            self.data["gas_guard_blocked"] = raw
-            self.data["gas_guard_blocked_at"] = datetime.now(UTC).isoformat()
 
     # ----------------------------------------------------------- gas value
 
@@ -333,10 +276,6 @@ class Ch592OtaCoordinator:
             gas_pending=None,
             gas_result=f"已写入 {value_units / 1000:.3f} m³",
             ota_mode=False,
-            # A deliberate write (up or down) is the new baseline.
-            gas_guard_value=value_units,
-            gas_guard_blocked=None,
-            gas_guard_blocked_at=None,
         )
         self._gas_pending_until = 0.0
         self._notify()
