@@ -111,3 +111,29 @@ cancel_threshold:
       example: "AA:BB:CC:DD:EE:FF"
       selector:
         text:
+
+reset_gas_guard:
+  name: Reset gas guard
+  description: >-
+    Make the guarded gas total accept the device's current reading as its new
+    baseline. Use this only after a deliberate downward correction; stale
+    replays and power-loss rollbacks are held automatically.
+  fields:
+    address:
+      name: Bluetooth address
+      description: Target device address. Optional when only one CH592 is configured.
+      example: "AA:BB:CC:DD:EE:FF"
+      selector:
+        text:
+    value:
+      name: Baseline value
+      description: >-
+        Value in m³ to use as the baseline. Leave empty to use the device's
+        latest advertised reading.
+      example: 2011.18
+      selector:
+        number:
+          min: 0
+          max: 99999.999
+          step: 0.001
+          mode: box

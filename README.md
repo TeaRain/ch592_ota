@@ -218,6 +218,41 @@ data:
 实测余量 190~460，默认 100 已经留足余量，一般只在换表型或环境变化时微调 80~300。
 `sensor.*_ota_status` 的 `device_threshold` 属性显示设备当前生效值。
 
+## 燃气统计（0.6.3）
+
+原始 BTHome `0x4C` 值会**向后跳**，有两个来源：
+
+- HA 重启时，蓝牙管理器会把扫描器保存的历史广播立即重放一次；如果保存的
+  是一条旧广告，燃气值会短暂回退（见 HA `bluetooth` 的
+  `_async_replay_history_for_callback`）；
+- 固件 ≤ 1.4.1 忽略 `EEPROM_WRITE` 返回值，掉电后可能从 DataFlash 里较旧的
+  记录启动（1.4.2 起已改为追加日志 + 写后校验）。
+
+把这种回退喂给 Derivative 会得到负速率；喂给 utility_meter 会把回退后的回升
+记成一次消耗。集成现在多提供一个只增不减的累计值：
+
+| 实体 | 说明 |
+|------|------|
+| `sensor.<device>_gas_total_guarded` | 只增不减的燃气累计值（m³），状态类 `total_increasing` |
+| `button.<device>_reset_gas_guard` | 把设备当前读数设为新的基线 |
+
+属性：`raw_value_m3`（最近一次广播的原始值）、`blocked_value_m3`（被拦下的
+向后跳）、`blocked_since`（从什么时候开始拦）。
+
+**用法**：把现有的 Derivative（消耗速率）和 utility_meter（今日/本月）的源改为
+`sensor.<device>_gas_total_guarded` 即可，实体 ID 不变，历史统计继续累计。
+
+**真实向下校正**：设备换表、人工改小读数之后，按 `Reset gas guard`，或调用
+（可带目标值）：
+
+```yaml
+action: ch592_ota.reset_gas_guard
+data:
+  value: 2009.23   # 省略则采用设备当前广播值
+```
+
+通过集成写燃气值成功时，基线会自动跟随写入值，不用再手动重置。
+
 ## 实体与观测属性
 
 | 实体 | 说明 |
@@ -227,6 +262,8 @@ data:
 | `sensor.<device>_ota_status` | `idle` / `running` / `rebooting` / `success` / `failed` / `aborted` |
 | `sensor.<device>_ota_progress` | 上传进度 0–100 % |
 | `sensor.<device>_firmware_version` | 设备通过 BTHome `0x53` 报告的固件版本 |
+| `sensor.<device>_gas_total_guarded` | 只增不减的燃气累计（0.6.3），供消耗统计使用 |
+| `button.<device>_reset_gas_guard` | 接受设备当前读数为新基线（0.6.3） |
 | `button.<device>_abort_ota` | 取消升级 |
 | `button.<device>_check_for_updates` | 立即检查固件清单 |
 | `number.<device>_gas_target` | 要写入的燃气值（草稿，不写设备） |
@@ -324,6 +361,7 @@ python tools/publish_firmware.py --repo . --notes "改了什么" --push
 | 0.6.0 | 采样阈值校正（0x87）：number 草稿 + 写入按钮 + 设备阈值显示 |
 | 0.6.1 | 设备页实体重新分组：数值与写入按钮统一放进「配置」 |
 | 0.6.2 | 集成图标与标志（`brand/`），HA / HACS 显示燃气表盘图标 |
+| 0.6.3 | `Gas total (guarded)` 只增不减的燃气累计，供消耗速率/utility_meter 使用 |
 
 固件侧：1.2.9 引入按页拆分的 PROGRAM；1.3.0 引入 `0x85` CRC32 校验与 OTA 模式
 电压上报；1.3.1 为电池实测版本；1.4.0 增加 `0x86` 燃气值写入；1.4.1 增加

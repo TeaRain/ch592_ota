@@ -35,6 +35,7 @@ SERVICE_SET_GAS = "set_gas"
 SERVICE_CANCEL_GAS = "cancel_gas"
 SERVICE_SET_THRESHOLD = "set_threshold"
 SERVICE_CANCEL_THRESHOLD = "cancel_threshold"
+SERVICE_RESET_GAS_GUARD = "reset_gas_guard"
 # Development helper: re-import the integration from disk without a HA restart.
 SERVICE_RELOAD_CODE = "reload_code"
 

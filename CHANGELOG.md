@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.3
+
+- 新增 `sensor.*_gas_total_guarded`：只增不减的燃气累计值，专供消耗统计
+  - HA 重启时会重放扫描器保存的旧广播，固件 ≤ 1.4.1 掉电也可能回滚到旧
+    DataFlash 记录；原始 `0x4C` 值向后跳会让 Derivative 出现负速率、
+    utility_meter 把回跳后的回升记成消耗
+  - 新实体只接受不小于当前值的读数（100 000 m³ 满量程回绕除外），向后跳时
+    保持旧值，并在属性里暴露 `raw_value_m3` / `blocked_value_m3` /
+    `blocked_since`
+  - 真实向下校正通过 `button.*_reset_gas_guard`、
+    `ch592_ota.reset_gas_guard` 服务（可带 `value`）或一次燃气写入来放行；
+    写入成功后基线自动跟随新值
+  - 用 `RestoreSensor` 跨 HA 重启保存基线
+- 状态属性、实体名与现有实体保持英文风格；设备页新增
+  「Gas total (guarded)」与「Reset gas guard」
+
 ## 0.6.2
 
 - 新增集成图标与标志：`brand/icon.png`、`logo.png`（含 @2x），
