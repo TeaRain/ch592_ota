@@ -239,6 +239,10 @@ template:
       - trigger: state
         entity_id: sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_gas
         id: change
+      # 燃气不动时原始实体不会产生状态变化，靠定时触发把当前值带进来
+      - trigger: time_pattern
+        minutes: "/5"
+        id: poll
       - trigger: state
         entity_id: sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_gas
         for: "00:10:00"
@@ -251,11 +255,11 @@ template:
         state_class: total_increasing
         icon: mdi:gas-cylinder
         state: >
-          {% set cur = trigger.to_state.state | float(-1) %}
+          {% set cur = states('sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_gas') | float(-1) %}
           {% set prev = this.state | float(0) %}
           {% if cur < 0 %}
             {{ prev }}
-          {% elif trigger.id == 'change' and cur < prev
+          {% elif trigger.id in ('change', 'poll') and cur < prev
                 and not (prev > 99990 and cur < 10) %}
             {{ prev }}
           {% else %}
@@ -265,6 +269,10 @@ template:
 
 实体 ID 跟随 `name`：`sensor.gas_total_guarded`。把 Derivative（消耗速率）和
 utility_meter（今日/本月）的源改成它即可，历史统计继续累计。
+
+燃气不走时原始实体不会有状态变化，所以额外加了每 5 分钟的 `time_pattern`
+触发：新建/重载后几分钟内就能拿到当前值，不会一直停在 `unknown`；定时触发
+同样受向后跳保护。
 
 模板传感器用 `this.state` 继承上一个值，HA 重启后会自动恢复，不需要额外 helper。
 真实向下校正（换表、人工改小）会在 10 分钟后被接受，届时消耗统计会出现一次负
