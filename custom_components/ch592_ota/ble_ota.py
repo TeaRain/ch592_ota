@@ -203,20 +203,12 @@ class Ch592OtaClient:
             self._notify(10, "uploading", 0, len(self._image))
             await self._async_program()
 
-            if info.get("features", 0) & OTA_FEATURE_CRC32:
-                try:
-                    await self._async_crc32_verify()
-                except OtaError as err:
-                    # Either the image really is corrupt or the device's CRC
-                    # disagrees with ours; the byte compare is authoritative and
-                    # reports the first bad offset, so a broken CRC command can
-                    # never become a dead end.
-                    _LOGGER.warning("CRC32 校验未通过，退回逐字节校验: %s", err)
-                    self._notify(86, "verifying", 0, len(self._image))
-                    await self._async_verify()
-            else:
-                self._notify(86, "verifying", 0, len(self._image))
-                await self._async_verify()
+            # The firmware's CRC32 command blocks its BLE task long enough to
+            # drop some ESPHome proxy links. Falling back to VERIFY on that same
+            # dead connection cannot work, so use the bounded per-chunk VERIFY
+            # path directly. It also pinpoints the first mismatched byte.
+            self._notify(86, "verifying", 0, len(self._image))
+            await self._async_verify()
 
             self._notify(97, "rebooting")
             await self._async_end()

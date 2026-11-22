@@ -234,15 +234,46 @@ class Ch592OtaCoordinator:
             self._notify()
 
     @staticmethod
-    def _is_ota_advertisement(service_info: BluetoothServiceInfoBleak) -> bool:
-        """Recognise the OTA firmware advertisement.
+    def _raw_16bit_uuids(raw: bytes | None) -> set[int] | None:
+        """Parse 16-bit UUIDs from the current BLE advertisement, not HA's cache."""
+        if not raw:
+            return None
+        uuids: set[int] = set()
+        index = 0
+        parsed = False
+        while index < len(raw):
+            length = raw[index]
+            index += 1
+            if length == 0:
+                break
+            end = index + length
+            if end > len(raw):
+                return None
+            ad_type = raw[index]
+            payload = raw[index + 1 : end]
+            parsed = True
+            if ad_type in (0x02, 0x03):  # partial/complete 16-bit UUID list
+                for offset in range(0, len(payload) - 1, 2):
+                    uuids.add(int.from_bytes(payload[offset : offset + 2], "little"))
+            elif ad_type == 0x16 and len(payload) >= 2:  # 16-bit service data
+                uuids.add(int.from_bytes(payload[:2], "little"))
+            index = end
+        return uuids if parsed else None
 
-        Neither the name nor the UUID list is reliable on its own: HA caches
-        "GasMeter OTA" as the device name, and the proxy keeps reporting
-        0xFFE0/0xFEE0 as *service UUIDs* of normal BTHome broadcasts (left over
-        from a GATT discovery during an earlier OTA). The BTHome 0xFCD2 service
-        data is the trustworthy marker: the OTA firmware never sends it.
+    @staticmethod
+    def _is_ota_advertisement(service_info: BluetoothServiceInfoBleak) -> bool:
+        """Recognise OTA from the current packet, ignoring cached GATT fields.
+
+        HA can retain 0xFEE0 service UUIDs and 0xFCD2 service data discovered in
+        earlier modes. The raw advertisement is authoritative when available;
+        merged fields remain a compatibility fallback for older HA versions.
         """
+        raw_uuids = Ch592OtaCoordinator._raw_16bit_uuids(
+            getattr(service_info, "raw", None)
+        )
+        if raw_uuids is not None:
+            return 0xFEE0 in raw_uuids and 0xFCD2 not in raw_uuids
+
         has_ota_uuid = any(
             u.lower() == OTA_SERVICE_UUID for u in service_info.service_uuids
         ) or any(

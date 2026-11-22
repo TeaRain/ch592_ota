@@ -157,7 +157,10 @@ _ble_module = _module(
 )
 _module(
     f"{PACKAGE}.bthome",
-    has_bthome_data=lambda info: False,
+    has_bthome_data=lambda info: any(
+        uuid.lower() in ("0000fcd2-0000-1000-8000-00805f9b34fb", "fcd2")
+        for uuid in info.service_data
+    ),
     parse_bthome_fields=lambda info: {},
 )
 
@@ -395,6 +398,24 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(wait.done())
         self.coordinator.data["ads"] = 6
         self.assertTrue(await asyncio.wait_for(wait, timeout=1))
+
+    def test_ota_raw_packet_wins_over_cached_bthome_service_data(self):
+        info = types.SimpleNamespace(
+            service_uuids=[coordinator_module.OTA_SERVICE_UUID],
+            service_data={"0000fcd2-0000-1000-8000-00805f9b34fb": b"stale"},
+            raw=bytes.fromhex("0201060503e0ffe0fe"),
+        )
+        self.assertTrue(Ch592OtaCoordinator._is_ota_advertisement(info))
+
+    def test_bthome_raw_packet_wins_over_cached_ota_service_uuid(self):
+        info = types.SimpleNamespace(
+            service_uuids=[coordinator_module.OTA_SERVICE_UUID],
+            service_data={},
+            raw=bytes.fromhex(
+                "0201061616d2fc400c6c0b3d00004c3c0000005305312e342e36"
+            ),
+        )
+        self.assertFalse(Ch592OtaCoordinator._is_ota_advertisement(info))
 
 
 if __name__ == "__main__":
