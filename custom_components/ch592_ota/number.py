@@ -34,7 +34,7 @@ class Ch592GasTargetNumber(NumberEntity):
     """Mechanical meter reading used to calculate the HA offset."""
 
     _attr_has_entity_name = True
-    _attr_name = "燃气表实际读数（保存即校准）"
+    _attr_name = "机械表实际读数（输入后自动校准）"
     _attr_icon = "mdi:counter"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_native_min_value = 0
@@ -83,19 +83,15 @@ class Ch592GasTargetNumber(NumberEntity):
             "device_value_m3": round(int(gas) / 1000, 3) if gas is not None else None,  # type: ignore[arg-type]
             "pending_value_m3": round(int(pending) / 1000, 3) if pending is not None else None,  # type: ignore[arg-type]
             "last_result": self.coordinator.data.get("gas_result"),
+            "操作说明": "输入机械表完整读数，按回车或点击输入框外即校准；无需按B，不修改设备原始计数",
         }
 
 
 class Ch592ThresholdNumber(NumberEntity):
-    """Draft for the TCRT5000 pulse threshold (firmware >= 1.4.1).
-
-    Like the gas target this never writes the device on its own: the "Write
-    threshold" button / ``ch592_ota.set_threshold`` service performs the actual
-    DataFlash write while the device is in OTA mode.
-    """
+    """Set the TCRT5000 threshold, arming a write until OTA mode if needed."""
 
     _attr_has_entity_name = True
-    _attr_name = "采样阈值（待写入）"
+    _attr_name = "采样阈值（待写入，按B生效）"
     _attr_icon = "mdi:tune-variant"
     _attr_native_min_value = THRESHOLD_MIN
     _attr_native_max_value = THRESHOLD_MAX
@@ -130,7 +126,7 @@ class Ch592ThresholdNumber(NumberEntity):
         return int(device) if device is not None else THRESHOLD_DEFAULT  # type: ignore[arg-type]
 
     async def async_set_native_value(self, value: float) -> None:
-        self.coordinator.set_threshold_target(int(round(value)))
+        await self.coordinator.async_set_threshold(int(round(value)))
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
@@ -138,4 +134,5 @@ class Ch592ThresholdNumber(NumberEntity):
             "device_threshold": self.coordinator.data.get("threshold"),
             "pending_threshold": self.coordinator.data.get("threshold_pending"),
             "last_result": self.coordinator.data.get("threshold_result"),
+            "操作说明": "普通模式输入后登记待写入，再长按B键3秒；OTA模式输入后直接写入",
         }

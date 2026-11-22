@@ -8,11 +8,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity_registry import (
-    RegistryEntryHider,
-    async_get as async_get_entity_registry,
-)
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
+from .const import DOMAIN
 from .coordinator import Ch592OtaCoordinator
 from .entity import build_device_info
 
@@ -23,12 +21,21 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator: Ch592OtaCoordinator = entry.runtime_data
+
+    # The number entities now perform calibration / arm threshold writes
+    # directly. Remove the old two-step button entities from existing installs.
+    registry = async_get_entity_registry(hass)
+    for suffix in ("write_gas", "write_threshold"):
+        entity_id = registry.async_get_entity_id(
+            "button", DOMAIN, f"{coordinator.address}_{suffix}"
+        )
+        if entity_id is not None:
+            registry.async_remove(entity_id)
+
     async_add_entities(
         [
             Ch592FirmwareCheckButton(coordinator),
             Ch592OtaAbortButton(coordinator),
-            Ch592WriteGasButton(coordinator),
-            Ch592WriteThresholdButton(coordinator),
             Ch592CancelPendingButton(coordinator),
         ]
     )
@@ -41,7 +48,6 @@ class Ch592FirmwareCheckButton(ButtonEntity):
     _attr_name = "检查固件更新"
     _attr_icon = "mdi:cloud-refresh"
     _attr_should_poll = False
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator: Ch592OtaCoordinator) -> None:
         self.coordinator = coordinator
@@ -102,99 +108,8 @@ class Ch592OtaAbortButton(ButtonEntity):
         await self.coordinator.async_abort()
 
 
-class Ch592WriteGasButton(ButtonEntity):
-    """Calibrate the HA offset from the draft mechanical meter reading."""
-
-    _attr_has_entity_name = True
-    _attr_name = "校准燃气表读数"
-    _attr_icon = "mdi:content-save-edit"
-    _attr_should_poll = False
-    _attr_entity_category = EntityCategory.CONFIG
-
-    def __init__(self, coordinator: Ch592OtaCoordinator) -> None:
-        self.coordinator = coordinator
-        self._address = coordinator.address
-        self._attr_unique_id = f"{self._address}_write_gas"
-
-    async def async_added_to_hass(self) -> None:
-        # Keep the entity callable by existing automations, but remove the old
-        # two-step workflow from the device page. The number now calibrates on save.
-        async_get_entity_registry(self.hass).async_update_entity(
-            self.entity_id, hidden_by=RegistryEntryHider.INTEGRATION
-        )
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self.async_write_ha_state)
-        )
-
-    @property
-    def device_info(self):
-        return build_device_info(self.coordinator)
-
-    @property
-    def available(self) -> bool:
-        return True
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        return {
-            "ota_mode": self.coordinator.data.get("ota_mode"),
-            "pending": self.coordinator.data.get("gas_pending") is not None,
-            "last_result": self.coordinator.data.get("gas_result"),
-        }
-
-    async def async_press(self) -> None:
-        target = self.coordinator.data.get("gas_target")
-        if target is None:
-            raise HomeAssistantError("请先输入燃气表的真实读数")
-        await self.coordinator.async_calibrate_gas(int(target))  # type: ignore[arg-type]
-
-
-class Ch592WriteThresholdButton(ButtonEntity):
-    """Write the draft pulse threshold (arms it when not in OTA mode)."""
-
-    _attr_has_entity_name = True
-    _attr_name = "写入采样阈值"
-    _attr_icon = "mdi:tune"
-    _attr_should_poll = False
-    _attr_entity_category = EntityCategory.CONFIG
-
-    def __init__(self, coordinator: Ch592OtaCoordinator) -> None:
-        self.coordinator = coordinator
-        self._address = coordinator.address
-        self._attr_unique_id = f"{self._address}_write_threshold"
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self.async_write_ha_state)
-        )
-
-    @property
-    def device_info(self):
-        return build_device_info(self.coordinator)
-
-    @property
-    def available(self) -> bool:
-        return True
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        return {
-            "ota_mode": self.coordinator.data.get("ota_mode"),
-            "pending": self.coordinator.data.get("threshold_pending") is not None,
-            "last_result": self.coordinator.data.get("threshold_result"),
-        }
-
-    async def async_press(self) -> None:
-        target = self.coordinator.data.get("threshold_target")
-        if target is None:
-            raise HomeAssistantError(
-                "请先在 Pulse threshold 里设置要写入的阈值"
-            )
-        await self.coordinator.async_set_threshold(int(target))  # type: ignore[arg-type]
-
-
 class Ch592CancelPendingButton(ButtonEntity):
-    """Drop armed writes so pressing B upgrades again."""
+    """Drop an armed threshold write so pressing B upgrades again."""
 
     _attr_has_entity_name = True
     _attr_name = "取消待写入"
@@ -227,4 +142,3 @@ class Ch592CancelPendingButton(ButtonEntity):
     async def async_press(self) -> None:
         self.coordinator.cancel_gas()
         self.coordinator.cancel_threshold()
-

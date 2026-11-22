@@ -43,9 +43,17 @@ class FakeStore:
 class FakeEntityRegistry:
     def __init__(self):
         self.hidden = {}
+        self.legacy = {}
+        self.removed = []
 
     def async_update_entity(self, entity_id, *, hidden_by):
         self.hidden[entity_id] = hidden_by
+
+    def async_get_entity_id(self, domain, platform, unique_id):
+        return self.legacy.get((domain, platform, unique_id))
+
+    def async_remove(self, entity_id):
+        self.removed.append(entity_id)
 
 
 _entity_registry = FakeEntityRegistry()
@@ -217,6 +225,8 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         )
         self.coordinator = Ch592OtaCoordinator(self.hass, self.entry)
         _entity_registry.hidden.clear()
+        _entity_registry.legacy.clear()
+        _entity_registry.removed.clear()
         _operation_state.update(active=0, maximum=0)
 
     def tearDown(self):
@@ -448,24 +458,13 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
             (update.Ch592FirmwareUpdateEntity, "固件更新"),
             (button.Ch592FirmwareCheckButton, "检查固件更新"),
             (button.Ch592OtaAbortButton, "取消升级"),
-            (button.Ch592WriteGasButton, "校准燃气表读数"),
-            (button.Ch592WriteThresholdButton, "写入采样阈值"),
             (button.Ch592CancelPendingButton, "取消待写入"),
-            (number.Ch592GasTargetNumber, "燃气表实际读数（保存即校准）"),
-            (number.Ch592ThresholdNumber, "采样阈值（待写入）"),
+            (number.Ch592GasTargetNumber, "机械表实际读数（输入后自动校准）"),
+            (number.Ch592ThresholdNumber, "采样阈值（待写入，按B生效）"),
         ]
         for entity_class, label in expected:
             with self.subTest(entity=entity_class.__name__):
                 self.assertEqual(entity_class._attr_name, label)
-
-    async def test_calibrate_button_does_not_use_ble(self):
-        _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
-        module = _load(f"{PACKAGE}.button", REPO / "custom_components/ch592_ota/button.py")
-        self.coordinator.data.update(gas_value=1000, gas_target=900, ota_mode=False)
-        button = module.Ch592WriteGasButton(self.coordinator)
-        await button.async_press()
-        self.assertEqual(self.coordinator.data["gas_total"], 900)
-        self.assertIsNone(self.coordinator.data["gas_pending"])
 
     async def test_saving_calibration_number_calibrates_immediately(self):
         _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
@@ -483,23 +482,61 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.coordinator.data["gas_consumption_total"], 10)
         self.assertIsNone(self.coordinator.data["gas_pending"])
 
-    async def test_legacy_calibrate_button_is_hidden_but_still_works(self):
+    async def test_legacy_write_buttons_are_removed_from_registry(self):
         _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
         module = _load(f"{PACKAGE}.button", REPO / "custom_components/ch592_ota/button.py")
-        self.coordinator.data.update(gas_value=1000, gas_target=900, ota_mode=False)
-        button = module.Ch592WriteGasButton(self.coordinator)
-        button.hass = self.hass
-        button.entity_id = "button.ch592_legacy_calibrate"
-        button.async_write_ha_state = lambda: None
-        button.async_on_remove = lambda remove: None
-
-        await button.async_added_to_hass()
-        self.assertEqual(
-            _entity_registry.hidden.get("button.ch592_legacy_calibrate"),
-            "integration",
+        address = self.coordinator.address
+        gas_id = "button.ch592_legacy_calibrate"
+        threshold_id = "button.ch592_legacy_threshold"
+        _entity_registry.legacy.update(
+            {
+                ("button", "ch592_ota", f"{address}_write_gas"): gas_id,
+                ("button", "ch592_ota", f"{address}_write_threshold"): threshold_id,
+            }
         )
-        await button.async_press()
-        self.assertEqual(self.coordinator.data["gas_total"], 900)
+        self.entry.runtime_data = self.coordinator
+        added = []
+
+        await module.async_setup_entry(self.hass, self.entry, added.extend)
+
+        self.assertEqual(set(_entity_registry.removed), {gas_id, threshold_id})
+        self.assertEqual(len(added), 3)
+        self.assertFalse(
+            any(
+                entity._attr_unique_id.endswith(("_write_gas", "_write_threshold"))
+                for entity in added
+            )
+        )
+
+    async def test_firmware_check_is_a_control_not_a_diagnostic(self):
+        _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
+        module = _load(f"{PACKAGE}.button", REPO / "custom_components/ch592_ota/button.py")
+        self.assertIsNone(
+            getattr(module.Ch592FirmwareCheckButton, "_attr_entity_category", None)
+        )
+
+    async def test_saving_threshold_number_writes_immediately_in_ota_mode(self):
+        _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
+        module = _load(f"{PACKAGE}.number", REPO / "custom_components/ch592_ota/number.py")
+        self.coordinator.data["ota_mode"] = True
+        number = module.Ch592ThresholdNumber(self.coordinator)
+
+        await number.async_set_native_value(140)
+
+        self.assertEqual(self.coordinator.data["threshold"], 140)
+        self.assertEqual(self.coordinator.data["threshold_result"], "已写入阈值 140")
+        self.assertIsNone(self.coordinator.data["threshold_pending"])
+
+    async def test_saving_threshold_number_arms_write_outside_ota_mode(self):
+        _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
+        module = _load(f"{PACKAGE}.number", REPO / "custom_components/ch592_ota/number.py")
+        self.coordinator.data["ota_mode"] = False
+        number = module.Ch592ThresholdNumber(self.coordinator)
+
+        await number.async_set_native_value(160)
+
+        self.assertEqual(self.coordinator.data["threshold_target"], 160)
+        self.assertEqual(self.coordinator.data["threshold_pending"], 160)
 
     async def test_legacy_set_gas_calibrates_instead_of_arming_ota(self):
         self.coordinator.data.update(gas_value=1000, ota_mode=False)

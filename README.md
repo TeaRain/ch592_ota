@@ -176,12 +176,13 @@ data:
 ### 校准
 
 1. 等收到一次普通 BTHome 广播，在 `number.*_gas_target`（显示为
-   **燃气表实际读数（保存即校准）**）输入机械燃气表的完整真实读数并保存；
-2. 0.7.3 起保存即执行校准，不再需要单独的写入按钮。集成计算并持久化
+   **机械表实际读数（输入后自动校准）**）输入机械燃气表的完整真实读数；
+2. 按回车或点击输入框外提交数值即执行校准，不需要单独的写入按钮。集成计算并持久化
    `offset = 真实表读数 - 当前 raw`，随后 `gas_total` 按有效原始增量增加。
-   **不需要按 B、不需要进入 OTA，也不会改写设备 DataFlash。**
+   **不需要按 B、不需要进入 OTA，也不会改写设备 DataFlash 或原始计数。**
 
-旧 `button.*_write_gas_value` 在设备页隐藏，但实体与 press 行为保留，已有自动化无需修改。
+0.7.6 起删除旧 `button.*_write_gas_value` 及其注册表残留；`ch592_ota.set_gas`
+服务仍保留为校准接口。
 
 `offset` 可以为负数。`ch592_ota.set_gas` 保留为兼容别名，但现在也只执行 HA
 校准，不再写设备，也不再产生 OTA 待写任务。
@@ -204,11 +205,14 @@ data:
 固件 1.5.0 起，P/N 按下立即 ±1，前 3 秒每 300 ms ±1，3 秒后 ±10，9 秒后 ±50；
 松手不重复步进。N 到下限 20、P 到上限 2000 后停止变化。
 
-1. `number.*_pulse_threshold` 填目标值（20~2000，默认 100）——**草稿，不写设备**；
-2. 点 `button.*_write_pulse_threshold`：
+1. `number.*_pulse_threshold` 填目标值（20~2000，默认 100），按回车或点击输入框外提交；
+2. 不再需要单独的 HA 写入按钮：
    - 设备已在 OTA 模式 → 立即写入（写 DataFlash，**不复位**）；
-   - 不在 OTA 模式 → 记为「待写入」，长按 B 3 秒后集成先写阈值、跳过自动升级；
+   - 不在 OTA 模式 → 只记为「待写入」，**仍须长按 B 3 秒**进入 OTA 后才会写入；
+     本次按 B 优先写阈值、跳过自动升级，待写入 15 分钟内有效；
 3. 取消：`button.*_cancel_pending_writes` 或 `ch592_ota.cancel_threshold`。
+
+0.7.6 起删除旧 `button.*_write_pulse_threshold`；`ch592_ota.set_threshold` 服务保留。
 
 ```yaml
 action: ch592_ota.set_threshold
@@ -217,8 +221,8 @@ data:
 ```
 
 设备端把阈值存在 DataFlash **块 3（0x3000）**，写入后读回校验，非法值回 `0xFE`，
-校验失败回 `0xFF`，旧值不受影响。阈值写完后设备**不复位**，所以同一次 OTA 会话里
-还可以接着写燃气值（集成会先写阈值、再写燃气，后者负责复位）。
+校验失败回 `0xFF`，旧值不受影响。阈值写完后设备**不复位**，可以继续 OTA 操作；
+燃气真实读数只在 HA 校准，不再通过 OTA 写设备。
 
 调参方向：阈值越低越灵敏，可能把噪声计成脉冲（读数虚增）；越高越保守，可能漏计数。
 实测余量 190~460，默认 100 已经留足余量，一般只在换表型或环境变化时微调 80~300。
@@ -245,11 +249,9 @@ data:
 | `sensor.<device>_firmware_version` | 设备通过 BTHome `0x53` 报告的固件版本 |
 | `button.<device>_abort_ota` | 取消升级 |
 | `button.<device>_check_for_updates` | 立即检查固件清单 |
-| `number.<device>_gas_target` | 燃气表实际读数（保存即校准，只写 HA offset） |
-| `button.<device>_write_gas_value` | 旧校准按钮，设备页隐藏；保留给已有自动化 |
+| `number.<device>_gas_target` | 机械表实际读数（提交即校准，只写 HA offset，无需按 B） |
 | `sensor.<device>_current_threshold` | 当前采样阈值（P/N按键调整），固件 ≥1.4.9 实时广播 |
-| `number.<device>_pulse_threshold` | 采样阈值草稿（20~2000，默认 100） |
-| `button.<device>_write_pulse_threshold` | 写入阈值 / 记为待写入 |
+| `number.<device>_pulse_threshold` | 采样阈值（提交后写入/登记待写入；普通模式仍须按 B） |
 | `button.<device>_cancel_pending_writes` | 取消待写入阈值 |
 
 `sensor.<device>_ota_status` 的属性是排查问题的主要入口：
@@ -349,6 +351,7 @@ python tools/publish_firmware.py --repo . --notes "改了什么" --push
 | 0.7.3 | 中文“燃气表实际读数”保存即校准；旧按钮隐藏但保留自动化兼容 |
 | 0.7.4 | P/N 当前阈值约 300 ms 回显；设备页实体统一中文，ID 与接口不变 |
 | 0.7.5 | 协议 8 不再被冗余能力位挡在慢速 VERIFY；阈值只读实体修复为 diagnostic |
+| 0.7.6 | 检查更新移回控制区；燃气/阈值旧写入按钮删除；阈值输入直接写入或登记待写入 |
 
 固件侧：1.2.9 引入按页拆分的 PROGRAM；1.3.0 引入 `0x85` CRC32 校验与 OTA 模式
 电压上报；1.3.1 为电池实测版本；1.4.0 增加 `0x86` 燃气值写入；1.4.1 增加

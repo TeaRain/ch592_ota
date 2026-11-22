@@ -52,7 +52,7 @@ cards:
       - entity: button.ch592_abort_ota
         name: 取消升级
 
-  # HA 校准：保存机械表真实读数即更新 HA offset，不写设备、不需 OTA、无需按钮。
+  # HA 校准：提交机械表真实读数即更新 HA offset，不写设备、不需按 B、无需按钮。
   - type: entities
     title: HA 燃气读数校准
     icon: mdi:counter
@@ -60,10 +60,10 @@ cards:
       - entity: sensor.sheng_huo_yang_tai_ch592_raw_gas_counter
         name: 设备原始计数
       - entity: number.sheng_huo_yang_tai_ch592_gas_target
-        name: 燃气表实际读数（保存即校准）
+        name: 机械表实际读数（输入后自动校准）
 
   # 采样阈值：默认 100，可设 20~2000。调低更灵敏（可能多计），调高更保守（可能漏计）。
-  # 同样先存草稿，点“写入阈值”才写设备；不在 OTA 模式时记为待写入。
+  # 普通模式提交数值只登记待写入，仍须长按 B 3 秒；OTA 模式提交后才直接写入。
   - type: entities
     title: 采样阈值校正
     icon: mdi:tune-variant
@@ -71,13 +71,6 @@ cards:
       - entity: sensor.sheng_huo_yang_tai_ch592_current_threshold
         name: 当前采样阈值（P/N按键调整）
       - entity: number.sheng_huo_yang_tai_ch592_pulse_threshold
-        name: 采样阈值（待写入）
-      - entity: button.sheng_huo_yang_tai_ch592_write_pulse_threshold
-        name: 写入阈值
-        tap_action:
-          action: perform-action
-          perform_action: button.press
-          target:
-            entity_id: button.sheng_huo_yang_tai_ch592_write_pulse_threshold
-          confirmation:
-            text: 确认把采样阈值写为 Pulse threshold 里的数值？过低会多计、过高会漏计。
+        name: 采样阈值（待写入，按B生效）
+      - entity: button.sheng_huo_yang_tai_ch592_cancel_pending_writes
+        name: 取消待写入
