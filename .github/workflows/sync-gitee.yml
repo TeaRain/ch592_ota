@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Mirror the published Gitee repository
+      - name: Mirror Gitee and publish 0.7.6
         run: |
           set -euo pipefail
           git clone --depth 1 https://gitee.com/zigbridge/ch592_ota.git /tmp/ch592-upstream
@@ -23,7 +23,7 @@ jobs:
           git add -A
           if ! git diff --cached --quiet; then
             version=$(jq -er '.version' custom_components/ch592_ota/manifest.json)
-            git commit -m "release: CH592 OTA integration ${version}" -m "Co-Authored-By: Kimi Code <noreply@moonshot.cn>"
+            git commit -m "release: CH592 OTA integration ${version}" -m "Co-Authored-By: Kimi <noreply@moonshot.cn>"
             git push origin master
           fi
       - name: Create the integration release
