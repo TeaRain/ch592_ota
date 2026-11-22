@@ -57,7 +57,7 @@ class FakeClient:
 
 
 class BleOtaReliabilityTests(unittest.IsolatedAsyncioTestCase):
-    async def _run_with_protocol(self, protocol):
+    async def _run_with_protocol(self, protocol, features=None):
         client = ble_ota.Ch592OtaClient(
             object(), "AA:BB:CC:DD:EE:FF", b"\x6f\x00\x00\x00", lambda *args: None
         )
@@ -69,7 +69,11 @@ class BleOtaReliabilityTests(unittest.IsolatedAsyncioTestCase):
         client._find_ota_char = lambda: object()
         client._async_info = AsyncMock(
             return_value={
-                "features": const.OTA_FEATURE_PAGE_SPLIT | const.OTA_FEATURE_CRC32,
+                "features": (
+                    const.OTA_FEATURE_PAGE_SPLIT | const.OTA_FEATURE_CRC32
+                    if features is None
+                    else features
+                ),
                 "image_size": const.IMAGE_SIZE,
                 "block_size": const.FLASH_BLOCK_SIZE,
                 "protocol": protocol,
@@ -101,6 +105,12 @@ class BleOtaReliabilityTests(unittest.IsolatedAsyncioTestCase):
         client = await self._run_with_protocol(8)
         client._async_erase.assert_awaited_once()
         client._async_program.assert_awaited_once()
+        client._async_crc32_verify.assert_awaited_once()
+        client._async_verify.assert_not_called()
+        client._async_end.assert_awaited_once()
+
+    async def test_protocol_8_does_not_require_redundant_crc_capability_bit(self):
+        client = await self._run_with_protocol(8, const.OTA_FEATURE_PAGE_SPLIT)
         client._async_crc32_verify.assert_awaited_once()
         client._async_verify.assert_not_called()
         client._async_end.assert_awaited_once()

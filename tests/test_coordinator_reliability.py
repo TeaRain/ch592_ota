@@ -422,7 +422,12 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         sensor = module.Ch592CurrentThresholdSensor(self.coordinator, self.entry)
         self.assertEqual(sensor.native_value, 140)
         self.assertEqual(sensor._attr_name, "当前采样阈值（P/N按键调整）")
+        self.assertEqual(sensor._attr_entity_category, "diagnostic")
         self.assertTrue(sensor._attr_unique_id.endswith("_current_threshold"))
+
+    async def test_ota_info_exposes_actual_device_features(self):
+        self.coordinator._on_ota_info({"features": 0x0D})
+        self.assertEqual(self.coordinator.data["features"], 0x0D)
 
     async def test_device_page_entity_labels_are_chinese(self):
         _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")

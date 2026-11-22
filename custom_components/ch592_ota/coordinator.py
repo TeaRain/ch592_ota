@@ -737,6 +737,8 @@ class Ch592OtaCoordinator:
             self.data["vdd_min"] = info.get("vdd_min") or info["vdd"]
         if info.get("protocol"):
             self.data["protocol"] = info["protocol"]
+        if info.get("features") is not None:
+            self.data["features"] = int(info["features"])
         if info.get("threshold") is not None:
             self.data["threshold"] = info["threshold"]
         for key in ("chunk", "verify_chunk", "mtu"):

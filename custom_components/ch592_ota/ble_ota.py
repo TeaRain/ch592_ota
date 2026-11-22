@@ -208,10 +208,12 @@ class Ch592OtaClient:
             # BLE link supervision expires. Older firmware keeps the bounded
             # VERIFY path: its bitwise CRC can drop ESPHome proxy connections.
             verified = False
-            if (
-                info.get("features", 0) & OTA_FEATURE_CRC32
-                and int(info.get("protocol", 1)) >= FAST_CRC32_PROTOCOL
-            ):
+            if int(info.get("protocol", 1)) >= FAST_CRC32_PROTOCOL:
+                _LOGGER.info(
+                    "协议 %s 使用单次 CRC32 快速校验 (features=0x%02X)",
+                    info.get("protocol"),
+                    int(info.get("features", 0)),
+                )
                 try:
                     await self._async_crc32_verify()
                     verified = True

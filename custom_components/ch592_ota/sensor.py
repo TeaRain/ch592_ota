@@ -115,6 +115,11 @@ class Ch592OtaStatusSensor(Ch592OtaEntity):
             # Lowest value seen during the upload (fresh coin cell sags under load).
             "vdd_min_mv": self.coordinator.data.get("vdd_min"),
             "device_protocol": self.coordinator.data.get("protocol"),
+            "device_features": (
+                f"0x{int(self.coordinator.data['features']):02X}"
+                if self.coordinator.data.get("features") is not None
+                else None
+            ),
             "mtu": self.coordinator.data.get("mtu"),
             "chunk": self.coordinator.data.get("chunk"),
             "verify_chunk": self.coordinator.data.get("verify_chunk"),
@@ -157,7 +162,7 @@ class Ch592CurrentThresholdSensor(Ch592OtaEntity):
 
     _attr_name = "当前采样阈值（P/N按键调整）"
     _attr_icon = "mdi:tune-variant"
-    _attr_entity_category = EntityCategory.CONFIG
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
 
     def __init__(self, coordinator, entry) -> None:
         super().__init__(coordinator, entry)
