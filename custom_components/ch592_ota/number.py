@@ -34,7 +34,7 @@ class Ch592GasTargetNumber(NumberEntity):
     """Mechanical meter reading used to calculate the HA offset."""
 
     _attr_has_entity_name = True
-    _attr_name = "Gas calibration reading"
+    _attr_name = "燃气表实际读数（保存即校准）"
     _attr_icon = "mdi:counter"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_native_min_value = 0
@@ -71,7 +71,9 @@ class Ch592GasTargetNumber(NumberEntity):
         return round(int(gas) / 1000, 3) if gas is not None else None  # type: ignore[arg-type]
 
     async def async_set_native_value(self, value: float) -> None:
-        self.coordinator.set_gas_target(int(round(value * 1000)))
+        actual_units = int(round(value * 1000))
+        self.coordinator.set_gas_target(actual_units)
+        await self.coordinator.async_calibrate_gas(actual_units)
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:

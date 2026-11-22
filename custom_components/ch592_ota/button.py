@@ -8,6 +8,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_registry import (
+    RegistryEntryHider,
+    async_get as async_get_entity_registry,
+)
 
 from .coordinator import Ch592OtaCoordinator
 from .entity import build_device_info
@@ -113,6 +117,11 @@ class Ch592WriteGasButton(ButtonEntity):
         self._attr_unique_id = f"{self._address}_write_gas"
 
     async def async_added_to_hass(self) -> None:
+        # Keep the entity callable by existing automations, but remove the old
+        # two-step workflow from the device page. The number now calibrates on save.
+        async_get_entity_registry(self.hass).async_update_entity(
+            self.entity_id, hidden_by=RegistryEntryHider.INTEGRATION
+        )
         self.async_on_remove(
             self.coordinator.async_add_listener(self.async_write_ha_state)
         )

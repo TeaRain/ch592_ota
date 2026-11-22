@@ -40,6 +40,17 @@ class FakeStore:
         self.saved[self.key] = data
 
 
+class FakeEntityRegistry:
+    def __init__(self):
+        self.hidden = {}
+
+    def async_update_entity(self, entity_id, *, hidden_by):
+        self.hidden[entity_id] = hidden_by
+
+
+_entity_registry = FakeEntityRegistry()
+
+
 def callback(function):
     return function
 
@@ -104,6 +115,11 @@ def _install_dependencies():
     _module("homeassistant.exceptions", HomeAssistantError=HomeAssistantError)
     _module("homeassistant.helpers")
     _module("homeassistant.helpers.storage", Store=FakeStore)
+    _module(
+        "homeassistant.helpers.entity_registry",
+        async_get=lambda hass: _entity_registry,
+        RegistryEntryHider=types.SimpleNamespace(INTEGRATION="integration"),
+    )
     _module("homeassistant.helpers.entity", EntityCategory=types.SimpleNamespace(DIAGNOSTIC="diagnostic", CONFIG="config"))
     _module("homeassistant.helpers.entity_platform", AddEntitiesCallback=object)
     _module("homeassistant.helpers.device_registry", CONNECTION_BLUETOOTH="bluetooth", DeviceInfo=dict)
@@ -190,6 +206,7 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
             data={"address": "AA:BB:CC:DD:EE:FF"}, options={}, entry_id="test-entry"
         )
         self.coordinator = Ch592OtaCoordinator(self.hass, self.entry)
+        _entity_registry.hidden.clear()
         _operation_state.update(active=0, maximum=0)
 
     def tearDown(self):
@@ -382,6 +399,40 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         await button.async_press()
         self.assertEqual(self.coordinator.data["gas_total"], 900)
         self.assertIsNone(self.coordinator.data["gas_pending"])
+
+    async def test_saving_calibration_number_calibrates_immediately(self):
+        _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
+        module = _load(f"{PACKAGE}.number", REPO / "custom_components/ch592_ota/number.py")
+        self.coordinator.data["gas_value"] = 1000
+        await self.coordinator.async_calibrate_gas(5000)
+        self.coordinator._update_raw_gas(1010)
+        number = module.Ch592GasTargetNumber(self.coordinator)
+
+        await number.async_set_native_value(0.900)
+
+        self.assertEqual(self.coordinator.data["gas_value"], 1010)
+        self.assertEqual(self.coordinator.data["gas_total"], 900)
+        self.assertEqual(self.coordinator.gas.offset, -110)
+        self.assertEqual(self.coordinator.data["gas_consumption_total"], 10)
+        self.assertIsNone(self.coordinator.data["gas_pending"])
+
+    async def test_legacy_calibrate_button_is_hidden_but_still_works(self):
+        _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
+        module = _load(f"{PACKAGE}.button", REPO / "custom_components/ch592_ota/button.py")
+        self.coordinator.data.update(gas_value=1000, gas_target=900, ota_mode=False)
+        button = module.Ch592WriteGasButton(self.coordinator)
+        button.hass = self.hass
+        button.entity_id = "button.ch592_legacy_calibrate"
+        button.async_write_ha_state = lambda: None
+        button.async_on_remove = lambda remove: None
+
+        await button.async_added_to_hass()
+        self.assertEqual(
+            _entity_registry.hidden.get("button.ch592_legacy_calibrate"),
+            "integration",
+        )
+        await button.async_press()
+        self.assertEqual(self.coordinator.data["gas_total"], 900)
 
     async def test_legacy_set_gas_calibrates_instead_of_arming_ota(self):
         self.coordinator.data.update(gas_value=1000, ota_mode=False)

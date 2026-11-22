@@ -12,11 +12,11 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 
 ## 当前版本与历史实测
 
-> 1.4.8 / 0.7.2 已完成构建和自动化测试；1.4.8 的快速 CRC 尚未实机复测。1.4.7 已完成实机 OTA。
+> 1.4.8 / 0.7.3 已完成构建和自动化测试；1.4.8 的快速 CRC 尚未实机复测。1.4.7 已完成实机 OTA。
 
 | 项目 | 值 |
 |------|-----|
-| 集成版本 | **0.7.2** |
+| 集成版本 | **0.7.3** |
 | 固件版本 | **1.4.8** |
 | 一次升级耗时 | 协议 8 恢复单次 CRC32；旧协议使用逐块 VERIFY，耗时更长 |
 | 供电实测 | CR2032 新电池，OTA 负载下 **3.04 V**，全程无下探 |
@@ -175,11 +175,13 @@ data:
 
 ### 校准
 
-1. 等收到一次普通 BTHome 广播，在 `number.*_gas_target`（显示为 Gas calibration
-   reading）输入机械燃气表的真实读数；
-2. 点 `button.*_calibrate_gas`（旧实体 ID 可能仍为 `button.*_write_gas_value`）；
-3. 集成计算并持久化 `offset = 真实表读数 - 当前 raw`，随后 `gas_total` 按有效
-   原始增量增加。**不需要按 B、不需要进入 OTA，也不会改写设备 DataFlash。**
+1. 等收到一次普通 BTHome 广播，在 `number.*_gas_target`（显示为
+   **燃气表实际读数（保存即校准）**）输入机械燃气表的完整真实读数并保存；
+2. 0.7.3 起保存即执行校准，不再需要单独的写入按钮。集成计算并持久化
+   `offset = 真实表读数 - 当前 raw`，随后 `gas_total` 按有效原始增量增加。
+   **不需要按 B、不需要进入 OTA，也不会改写设备 DataFlash。**
+
+旧 `button.*_write_gas_value` 在设备页隐藏，但实体与 press 行为保留，已有自动化无需修改。
 
 `offset` 可以为负数。`ch592_ota.set_gas` 保留为兼容别名，但现在也只执行 HA
 校准，不再写设备，也不再产生 OTA 待写任务。
@@ -239,8 +241,8 @@ data:
 | `sensor.<device>_firmware_version` | 设备通过 BTHome `0x53` 报告的固件版本 |
 | `button.<device>_abort_ota` | 取消升级 |
 | `button.<device>_check_for_updates` | 立即检查固件清单 |
-| `number.<device>_gas_target` | 机械表真实读数校准输入（只写 HA offset） |
-| `button.<device>_write_gas_value` | 校准 HA 真实读数，不写设备 |
+| `number.<device>_gas_target` | 燃气表实际读数（保存即校准，只写 HA offset） |
+| `button.<device>_write_gas_value` | 旧校准按钮，设备页隐藏；保留给已有自动化 |
 | `number.<device>_pulse_threshold` | 采样阈值草稿（20~2000，默认 100） |
 | `button.<device>_write_pulse_threshold` | 写入阈值 / 记为待写入 |
 | `button.<device>_cancel_pending_writes` | 取消待写入阈值 |
@@ -338,6 +340,7 @@ python tools/publish_firmware.py --repo . --notes "改了什么" --push
 | 0.6.4 | 移除 guarded 实体与相关服务/按钮，集成回到纯 OTA/写值职责 |
 | 0.7.1 | 原始 BLE 包识别恢复按 B 自动升级；临时全局 VERIFY 避免 CRC32 阶段断链 |
 | 0.7.2 | 协议门控恢复单次 CRC32；仅旧固件使用 VERIFY，断链后不做无效回退 |
+| 0.7.3 | 中文“燃气表实际读数”保存即校准；旧按钮隐藏但保留自动化兼容 |
 
 固件侧：1.2.9 引入按页拆分的 PROGRAM；1.3.0 引入 `0x85` CRC32 校验与 OTA 模式
 电压上报；1.3.1 为电池实测版本；1.4.0 增加 `0x86` 燃气值写入；1.4.1 增加
