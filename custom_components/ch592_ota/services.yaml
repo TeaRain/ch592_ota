@@ -43,11 +43,10 @@ abort:
       selector:
         text:
 set_gas:
-  name: Set gas reading
+  name: Calibrate gas reading
   description: >-
-    Write the gas reading into the device's DataFlash over the OTA channel.
-    If the device is not in OTA mode the value is armed for 15 minutes: hold
-    button B for 3 seconds and the integration writes it instead of upgrading.
+    Calibrate the HA offset from the mechanical meter reading. This legacy
+    service name is kept for compatibility and does not write to the device.
   fields:
     address:
       name: Bluetooth address
@@ -57,7 +56,7 @@ set_gas:
         text:
     value:
       name: Gas reading
-      description: The value to write, in m³ (0.001 m³ resolution).
+      description: The mechanical meter reading used for HA calibration, in m³.
       example: 3050.79
       selector:
         number:

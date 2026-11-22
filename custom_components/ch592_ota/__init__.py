@@ -141,12 +141,14 @@ def _async_register_services(hass: HomeAssistant) -> None:
         """
         names = [
             "const",
+            "gas_accounting",
             "bthome",
             "ble_ota",
             "firmware",
             "entity",
             "coordinator",
             "sensor",
+            "number",
             "binary_sensor",
             "button",
             "update",

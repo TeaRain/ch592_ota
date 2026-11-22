@@ -9,6 +9,7 @@ import zlib
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from functools import wraps
 
 from homeassistant.components.bluetooth import (
     BluetoothScanningMode,
@@ -18,12 +19,12 @@ from homeassistant.components.bluetooth import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.storage import Store
 
 from .ble_ota import (
     Ch592OtaClient,
     OtaError,
     OtaMtuError,
-    async_set_gas,
     async_set_threshold,
 )
 from .bthome import has_bthome_data, parse_bthome_fields
@@ -33,7 +34,7 @@ from .const import (
     CONF_VERSION,
     DEFAULT_AUTO_INSTALL,
     DEFAULT_FIRMWARE,
-    GAS_MAX_UNITS,
+    DOMAIN,
     GAS_SET_PENDING_SECONDS,
     IMAGE_SIZE,
     OTA_SERVICE_UUID,
@@ -41,6 +42,7 @@ from .const import (
     THRESHOLD_MAX,
     THRESHOLD_MIN,
 )
+from .gas_accounting import GasAccounting
 from .firmware import (
     FirmwareCloudCoordinator,
     async_download_firmware,
@@ -51,6 +53,21 @@ from .firmware import (
 _LOGGER = logging.getLogger(__name__)
 
 Listener = Callable[[], None]
+
+
+def _track_config_operation(function):
+    """Make foreground service calls visible to abort and unload."""
+    @wraps(function)
+    async def wrapper(self, *args, **kwargs):
+        task = asyncio.current_task()
+        if task is not None:
+            self._foreground_tasks.add(task)
+        try:
+            return await function(self, *args, **kwargs)
+        finally:
+            if task is not None:
+                self._foreground_tasks.discard(task)
+    return wrapper
 
 
 class Ch592OtaCoordinator:
@@ -91,6 +108,18 @@ class Ch592OtaCoordinator:
         self.data["gas_result"] = None
         self._gas_pending_until = 0.0
         self._gas_task: asyncio.Task | None = None
+        self.gas = GasAccounting()
+        self._gas_store = Store(
+            hass, 1, f"{DOMAIN}.{getattr(entry, 'entry_id', self.address)}.gas"
+        )
+        self._gas_store_task: asyncio.Task | None = None
+        self._ble_lock = asyncio.Lock()
+        self._foreground_tasks: set[asyncio.Task] = set()
+        self._pending_start: int | None = None
+        self._start_counter = 0
+        self._operation_generation = 0
+        self._reboot_start_seq: int | None = None
+        self._stopped = False
         # Pulse threshold (firmware >= 1.4.1): device value, draft, armed intent.
         self.data["threshold"] = None
         self.data["threshold_target"] = None
@@ -101,6 +130,15 @@ class Ch592OtaCoordinator:
     # ------------------------------------------------------------- lifecycle
 
     async def async_start(self) -> None:
+        self._stopped = False
+        try:
+            stored = await self._gas_store.async_load()
+            if stored:
+                self.gas = GasAccounting.from_dict(stored)
+        except (TypeError, ValueError) as err:
+            _LOGGER.warning("燃气校准状态无效，等待重新校准: %s", err)
+            self.gas = GasAccounting()
+        self._sync_gas_data()
         self._unregister_bt = async_register_callback(
             self.hass,
             self._async_bt_callback,
@@ -109,6 +147,13 @@ class Ch592OtaCoordinator:
         )
 
     async def async_stop(self) -> None:
+        self._stopped = True
+        if self._gas_store_task is not None and not self._gas_store_task.done():
+            self._gas_store_task.cancel()
+            await asyncio.gather(self._gas_store_task, return_exceptions=True)
+        self._gas_store_task = None
+        if self.gas.calibrated:
+            await self._gas_store.async_save(self.gas.to_dict())
         if self._unregister_bt is not None:
             self._unregister_bt()
             self._unregister_bt = None
@@ -162,10 +207,7 @@ class Ch592OtaCoordinator:
                 # automatic upgrade: the user pressed B for that, and a
                 # finished upgrade would reboot the device out of OTA mode
                 # before the values could be written.
-                if (
-                    self._gas_pending_value() is not None
-                    or self._threshold_pending_value() is not None
-                ):
+                if self._threshold_pending_value() is not None:
                     self._maybe_apply_pending()
                 else:
                     self._maybe_auto_install()
@@ -174,7 +216,7 @@ class Ch592OtaCoordinator:
             version = fields.get("version")
             gas = fields.get("gas")
             if gas is not None:
-                self.data["gas_value"] = int(gas)  # type: ignore[arg-type]
+                self._update_raw_gas(int(gas))
             if version is not None:
                 self._seen_bthome = True
                 self.data["firmware_version"] = str(version)
@@ -209,6 +251,71 @@ class Ch592OtaCoordinator:
         )
         return has_ota_uuid and not has_bthome_data(service_info)
 
+    def _assert_operation_available(self) -> None:
+        """Reject overlapping device operations before any await creates a race."""
+        if self._stopped:
+            raise HomeAssistantError("设备配置已卸载")
+        if self._pending_start is not None:
+            raise HomeAssistantError("另一项 OTA 正在准备固件，请完成或取消后再试")
+        current = asyncio.current_task()
+        operations = (self._task, self._auto_task, self._gas_task)
+        for task in (*operations, *self._foreground_tasks):
+            if task is not None and not task.done() and task is not current:
+                raise HomeAssistantError("另一项设备操作正在进行，请完成或取消后再试")
+
+    def _sync_gas_data(self) -> None:
+        self.data.update(
+            gas_total=self.gas.total,
+            gas_consumption_total=self.gas.consumption,
+            gas_offset=self.gas.offset,
+            gas_effective_offset=self.gas.effective_offset,
+            gas_wraps=self.gas.wraps,
+            gas_reset_detected=self.gas.reset_detected,
+            gas_calibrated_at=self.gas.calibrated_at,
+            gas_accepted_raw=self.gas.last_raw,
+        )
+
+    def _update_raw_gas(self, raw: int) -> None:
+        self.data["gas_value"] = raw
+        self.gas.accept_raw(raw)
+        self._sync_gas_data()
+        self._schedule_gas_store()
+
+    def _schedule_gas_store(self) -> None:
+        if self._stopped or not self.gas.calibrated:
+            return
+        if self._gas_store_task is None or self._gas_store_task.done():
+            self._gas_store_task = self.hass.async_create_task(
+                self._async_save_gas_later()
+            )
+
+    async def _async_save_gas_later(self) -> None:
+        try:
+            await asyncio.sleep(30)
+            await self._gas_store.async_save(self.gas.to_dict())
+        finally:
+            self._gas_store_task = None
+
+    async def async_calibrate_gas(self, actual_units: int) -> dict[str, object]:
+        """Calibrate HA only; never writes the device counter over BLE."""
+        raw = self.data.get("gas_value")
+        if raw is None:
+            raise HomeAssistantError("尚未收到设备原始燃气计数，无法校准")
+        self.gas.calibrate(int(raw), int(actual_units))
+        self._sync_gas_data()
+        if self._gas_store_task is not None and not self._gas_store_task.done():
+            self._gas_store_task.cancel()
+            await asyncio.gather(self._gas_store_task, return_exceptions=True)
+        self._gas_store_task = None
+        await self._gas_store.async_save(self.gas.to_dict())
+        self._notify()
+        return {
+            "result": "calibrated",
+            "value": actual_units / 1000,
+            "offset": self.gas.offset / 1000,
+            "raw": raw / 1000,
+        }
+
     # ----------------------------------------------------------- gas value
 
     def _gas_pending_value(self) -> int | None:
@@ -238,47 +345,11 @@ class Ch592OtaCoordinator:
         self._notify()
 
     async def async_set_gas(self, value_units: int) -> dict[str, object]:
-        """Write now when the device is in OTA mode, otherwise arm it."""
-        if not 0 <= value_units < GAS_MAX_UNITS:
-            raise HomeAssistantError(
-                f"燃气值超出范围：{value_units / 1000:.3f} m³"
-            )
-        if self._task is not None and not self._task.done():
-            raise HomeAssistantError("升级进行中，请等升级完成后再写入燃气值")
-
+        """Compatibility alias: calibrate HA instead of writing the device."""
+        if value_units < 0:
+            raise HomeAssistantError("燃气表读数不能为负数")
         self.data["gas_target"] = int(value_units)
-        if self.data.get("ota_mode"):
-            await self._async_write_gas(value_units)
-            return {"result": "written", "value": value_units / 1000}
-
-        self.data["gas_pending"] = int(value_units)
-        self.data["gas_result"] = None
-        self._gas_pending_until = (
-            asyncio.get_running_loop().time() + GAS_SET_PENDING_SECONDS
-        )
-        self._notify()
-        return {
-            "result": "armed",
-            "value": value_units / 1000,
-            "note": "请长按 B 键 3 秒，进入 OTA 模式后会写入（15 分钟内有效）",
-        }
-
-    async def _async_write_gas(self, value_units: int) -> None:
-        self.data["gas_result"] = "writing"
-        self._notify()
-        try:
-            await async_set_gas(self.hass, self.address, value_units)
-        except Exception as err:  # noqa: BLE001 - surface every failure
-            self.data["gas_result"] = f"写入失败: {err}"
-            self._notify()
-            raise HomeAssistantError(f"写入燃气值失败: {err}") from err
-        self.data.update(
-            gas_pending=None,
-            gas_result=f"已写入 {value_units / 1000:.3f} m³",
-            ota_mode=False,
-        )
-        self._gas_pending_until = 0.0
-        self._notify()
+        return await self.async_calibrate_gas(value_units)
 
     # ------------------------------------------------------- pulse threshold
 
@@ -314,8 +385,7 @@ class Ch592OtaCoordinator:
             raise HomeAssistantError(
                 f"阈值超出范围：{value}（{THRESHOLD_MIN}~{THRESHOLD_MAX}）"
             )
-        if self._task is not None and not self._task.done():
-            raise HomeAssistantError("升级进行中，请等升级完成后再调整阈值")
+        self._assert_operation_available()
 
         self.data["threshold_target"] = int(value)
         if self.data.get("ota_mode"):
@@ -334,11 +404,15 @@ class Ch592OtaCoordinator:
             "note": "请长按 B 键 3 秒，进入 OTA 模式后会写入（15 分钟内有效）",
         }
 
+    @_track_config_operation
     async def _async_write_threshold(self, value: int) -> None:
         self.data["threshold_result"] = "writing"
         self._notify()
         try:
-            await async_set_threshold(self.hass, self.address, value)
+            async with self._ble_lock:
+                if self._stopped:
+                    raise HomeAssistantError("设备配置已卸载")
+                await async_set_threshold(self.hass, self.address, value)
         except Exception as err:  # noqa: BLE001 - surface every failure
             self.data["threshold_result"] = f"写入失败: {err}"
             self._notify()
@@ -355,11 +429,8 @@ class Ch592OtaCoordinator:
 
     @callback
     def _maybe_apply_pending(self) -> None:
-        """Write the armed threshold and/or gas value once OTA mode appears."""
-        if (
-            self._gas_pending_value() is None
-            and self._threshold_pending_value() is None
-        ):
+        """Write the armed threshold once OTA mode appears."""
+        if self._threshold_pending_value() is None:
             return
         if self._task is not None and not self._task.done():
             return
@@ -373,17 +444,12 @@ class Ch592OtaCoordinator:
         try:
             # Give the device a moment to switch from advertising to connectable.
             await asyncio.sleep(2)
-            # Threshold first: it does not reboot, so the gas write (which does)
-            # can still happen in this OTA session.
             threshold = self._threshold_pending_value()
             if threshold is not None:
                 try:
                     await self._async_write_threshold(threshold)
                 except Exception:  # noqa: BLE001 - recorded in threshold_result
                     _LOGGER.exception("自动写入阈值失败")
-            gas = self._gas_pending_value()
-            if gas is not None:
-                await self._async_write_gas(gas)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - already recorded in the results
@@ -414,8 +480,6 @@ class Ch592OtaCoordinator:
 
         if not self.auto_install:
             return skip("选项 auto_install_on_ota_mode 已关闭")
-        if self._gas_pending_value() is not None:
-            return skip("有待写入的燃气值，本次按 B 优先写燃气值；升级请稍后重新长按 B")
         if self._threshold_pending_value() is not None:
             return skip("有待写入的阈值，本次按 B 优先写阈值；升级请稍后重新长按 B")
         if not self._seen_bthome:
@@ -463,8 +527,10 @@ class Ch592OtaCoordinator:
                         await task
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001 - retried below
+                except Exception as err:  # noqa: BLE001 - retried below
                     _LOGGER.exception("自动升级第 %s 次尝试失败", attempt)
+                    self.data.update(status="failed", phase="failed", error=str(err))
+                    self._notify()
                 if self.data.get("status") == "success":
                     return
                 if int(self.data.get("progress") or 0) >= 5:
@@ -515,70 +581,92 @@ class Ch592OtaCoordinator:
         image: bytes | None = None,
         meta: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        if self._task is not None and not self._task.done():
-            raise HomeAssistantError("已有 OTA 任务正在运行")
-        if chunk is not None:
-            chunk = int(chunk)
-            if chunk % 16 or not 16 <= chunk <= 64:
-                raise HomeAssistantError("chunk 必须是 16~64 之间、16 的倍数")
-        self._requested_chunk = chunk
+        self._assert_operation_available()
+        self._start_counter += 1
+        reservation = self._start_counter
+        generation = self._operation_generation
+        self._pending_start = reservation
+        try:
+            if chunk is not None:
+                chunk = int(chunk)
+                if chunk % 16 or not 16 <= chunk <= 64:
+                    raise HomeAssistantError("chunk 必须是 16~64 之间、16 的倍数")
+            self._requested_chunk = chunk
 
-        if image is None:
-            path = self.resolve_firmware_path(firmware)
-            try:
-                image, meta = await self.hass.async_add_executor_job(
-                    self._read_image, path
+            if image is None:
+                path = self.resolve_firmware_path(firmware)
+                try:
+                    image, meta = await self.hass.async_add_executor_job(
+                        self._read_image, path
+                    )
+                except OSError as err:
+                    raise HomeAssistantError(f"无法读取固件 {path}: {err}") from err
+                source = str(path)
+            else:
+                meta = meta or {}
+                source = "云端固件"
+
+            if not image:
+                raise HomeAssistantError(f"固件文件为空: {source}")
+            if len(image) > IMAGE_SIZE - 16:
+                raise HomeAssistantError(
+                    f"固件过大: {len(image)} 字节，APP 区最多 {IMAGE_SIZE - 16} 字节"
                 )
-            except OSError as err:
-                raise HomeAssistantError(f"无法读取固件 {path}: {err}") from err
-            source = str(path)
-        else:
-            meta = meta or {}
-            source = "云端固件"
+            if len(image) < 4 or (image[0] & 0x7F) != 0x6F:
+                raise HomeAssistantError("文件不是有效的 CH592 APP 镜像（首字不是 JAL 指令）")
 
-        if not image:
-            raise HomeAssistantError(f"固件文件为空: {source}")
-        if len(image) > IMAGE_SIZE - 16:
-            raise HomeAssistantError(
-                f"固件过大: {len(image)} 字节，APP 区最多 {IMAGE_SIZE - 16} 字节"
+            actual_crc = f"0x{zlib.crc32(image) & 0xFFFFFFFF:08X}"
+            expected_crc = meta.get("crc32")
+            if expected_crc and str(expected_crc).upper() != actual_crc.upper():
+                raise HomeAssistantError(
+                    f"固件 CRC32 不匹配: 元数据 {expected_crc}, 实际 {actual_crc}"
+                )
+
+            if generation != self._operation_generation or self._stopped:
+                raise asyncio.CancelledError
+
+            target = version or meta.get(CONF_VERSION) or None
+            self._run_started = asyncio.get_running_loop().time()
+            self.data.update(
+                status="starting",
+                phase="starting",
+                progress=0,
+                uploaded=0,
+                total=len(image),
+                error=None,
+                duration_s=None,
             )
-        if len(image) < 4 or (image[0] & 0x7F) != 0x6F:
-            raise HomeAssistantError("文件不是有效的 CH592 APP 镜像（首字不是 JAL 指令）")
+            self._notify()
 
-        actual_crc = f"0x{zlib.crc32(image) & 0xFFFFFFFF:08X}"
-        expected_crc = meta.get("crc32")
-        if expected_crc and str(expected_crc).upper() != actual_crc.upper():
-            raise HomeAssistantError(
-                f"固件 CRC32 不匹配: 元数据 {expected_crc}, 实际 {actual_crc}"
+            self._task = self.hass.async_create_task(
+                self._async_run_ota(image, target), name=f"ch592_ota {self.address}"
             )
+            return {"status": "started", "version": target, "size": len(image)}
 
-        target = version or meta.get(CONF_VERSION) or None
-        self._run_started = asyncio.get_running_loop().time()
-        self.data.update(
-            status="starting",
-            phase="starting",
-            progress=0,
-            uploaded=0,
-            total=len(image),
-            error=None,
-            duration_s=None,
-        )
-        self._notify()
-
-        self._task = self.hass.async_create_task(
-            self._async_run_ota(image, target), name=f"ch592_ota {self.address}"
-        )
-        return {"status": "started", "version": target, "size": len(image)}
+        finally:
+            if self._pending_start == reservation:
+                self._pending_start = None
 
     async def async_abort(self, quiet: bool = False) -> None:
-        task = self._task
-        if task is not None and not task.done():
+        self._operation_generation += 1
+        current = asyncio.current_task()
+        tasks = {
+            task
+            for task in (
+                self._task,
+                self._auto_task,
+                self._gas_task,
+                *self._foreground_tasks,
+            )
+            if task is not None and not task.done() and task is not current
+        }
+        for task in tasks:
             task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         self._task = None
+        self._auto_task = None
+        self._gas_task = None
         if not quiet:
             self.data["status"] = "aborted"
             self.data["phase"] = "aborted"
@@ -625,6 +713,9 @@ class Ch592OtaCoordinator:
     def _on_progress(
         self, percent: int, phase: str, done: int, total: int
     ) -> None:
+        if phase == "rebooting":
+            # Ch592OtaClient emits this synchronously immediately before END.
+            self._reboot_start_seq = int(self.data["ads"])
         if (
             percent == self.data.get("progress")
             and phase == self.data.get("phase")
@@ -651,6 +742,7 @@ class Ch592OtaCoordinator:
 
     async def _async_run_ota(self, image: bytes, target: str | None) -> None:
         try:
+            self._reboot_start_seq = None
             # Chunks must be multiples of 16 so the WCH addr16 field stays aligned.
             requested = self._requested_chunk
             chunks: list[int | None] = [requested] if requested else [None]
@@ -661,7 +753,7 @@ class Ch592OtaCoordinator:
                     chunks.append(candidate)
 
             uploaded = False
-            # The device stays in OTA mode for 8 minutes after a dropped link,
+            # The device stays in OTA mode for about 5 minutes after a dropped link,
             # and a full 128-byte upload now takes ~35 s, so retrying the whole
             # upload is cheaper than giving up.
             for attempt in range(1, 4):
@@ -675,9 +767,12 @@ class Ch592OtaCoordinator:
                     )
                     self._client = client
                     try:
-                        await asyncio.wait_for(
-                            client.async_run(chunk), timeout=1800
-                        )
+                        async with self._ble_lock:
+                            if self._stopped:
+                                raise HomeAssistantError("设备配置已卸载")
+                            await asyncio.wait_for(
+                                client.async_run(chunk), timeout=1800
+                            )
                         uploaded = True
                         break
                     except OtaMtuError as err:
@@ -709,7 +804,9 @@ class Ch592OtaCoordinator:
             if not uploaded:
                 raise RuntimeError(str(self.data.get("error") or "OTA 上传失败"))
 
-            start_seq = int(self.data["ads"])
+            start_seq = self._reboot_start_seq
+            if start_seq is None:
+                raise RuntimeError("OTA 客户端未提供 END 前广播基线")
             self.data.update(status="rebooting", phase="waiting_reboot", progress=98)
             self._notify()
 
@@ -746,19 +843,18 @@ class Ch592OtaCoordinator:
     async def _async_wait_for_reboot(
         self, start_seq: int, target: str | None
     ) -> bool:
-        """Wait until the device advertises again after the reboot.
+        """Require an advertisement newer than the immediate pre-END baseline.
 
-        A device reporting the target version is conclusive on its own; waiting
-        for one *more* advertisement made a finished OTA sit at 98 % until the
-        next 60 s broadcast, because the reboot advertisement is often already
-        counted before ``start_seq`` is taken.
+        The version check alone is insufficient for a same-version reinstall:
+        the cached value already equals the target before END is sent.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + REBOOT_TIMEOUT
         while loop.time() < deadline:
-            if target is not None and self.data["firmware_version"] == target:
-                return True
-            if target is None and int(self.data["ads"]) > start_seq:
+            if (
+                int(self.data["ads"]) > start_seq
+                and (target is None or self.data["firmware_version"] == target)
+            ):
                 return True
             await asyncio.sleep(1)
         return False

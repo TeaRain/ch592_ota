@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.0
+
+- 设备 `0x4C` 改为原始累计计数；新增 `raw_gas_counter`、`gas_total` 与
+  `gas_consumption_total` 三个传感器
+- 校准只计算并持久化 HA offset：`offset = 真实表读数 - 当前 raw`，不再通过 BLE
+  写设备；`number.*_gas_target` 保留为校准输入，原写值按钮改为校准按钮
+- `ch592_ota.set_gas` 作为 HA 校准兼容别名保留；移除燃气值 OTA 待写及自动写值路径
+- 真实读数与统计消耗分离：校准只改变 `gas_total`，不改变 `gas_consumption_total`
+- 支持负 offset、uint32 自然回绕、旧广播/异常回退保持、异常复位检测和 HA 重载恢复
+- 新增 22 项模型、实体与 OTA 回归测试
+
+## 0.6.5
+
+- OTA、自动升级、燃气值和阈值写入使用同一把 BLE 锁，公共入口拒绝冲突操作
+- `abort` 和配置条目卸载现在会取消并等待 OTA、自动升级、后台及前台配置写入任务
+- OTA 在读取固件前预留操作，避免并发启动或 abort 后延迟启动
+- 自动升级下载或镜像校验失败时明确进入 `failed`，不再沿用旧的 `success`
+- 同版本重刷必须收到 END 前基线之后的新 BTHome 广播，避免未重启却显示成功
+- 新增 9 项协调器回归测试，覆盖并发、取消、失败状态及同版本重启判定
+
 ## 0.6.4
 
 - 移除 0.6.3 的 `Gas total (guarded)` 实体、`Reset gas guard` 按钮和

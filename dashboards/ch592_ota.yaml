@@ -23,8 +23,8 @@ cards:
     square: false
     cards:
       - type: tile
-        entity: sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_gas
-        name: 燃气
+        entity: sensor.sheng_huo_yang_tai_ch592_gas_total
+        name: 燃气表读数
         icon: mdi:fire
       - type: tile
         entity: sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_battery
@@ -52,25 +52,24 @@ cards:
       - entity: button.ch592_abort_ota
         name: 取消升级
 
-  # 燃气值校正：先在 number 里填目标值（只存草稿，不写设备），再点“写入燃气值”。
-  # 设备不在 OTA 模式时点写入 → 记为待写入，长按 B 3 秒后写入（优先于自动升级）。
+  # HA 校准：输入机械表真实读数后点校准，只更新 HA offset，不写设备、不需 OTA。
   - type: entities
-    title: 燃气值校正
+    title: HA 燃气读数校准
     icon: mdi:counter
     entities:
-      - entity: sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_gas
-        name: 设备当前
+      - entity: sensor.sheng_huo_yang_tai_ch592_raw_gas_counter
+        name: 设备原始计数
       - entity: number.ch592_gas_target
-        name: 写入为
+        name: 机械表真实读数
       - entity: button.ch592_write_gas_value
-        name: 写入燃气值
+        name: 校准 HA 读数
         tap_action:
           action: perform-action
           perform_action: button.press
           target:
             entity_id: button.ch592_write_gas_value
           confirmation:
-            text: 确认把燃气值写为 Gas target 里的数值？这会改写设备 DataFlash 里的计费读数。
+            text: 确认用输入的机械表读数重新计算 HA offset？不会改写设备原始计数。
       - entity: button.ch592_cancel_pending_gas_write
         name: 取消待写入
 
@@ -81,7 +80,7 @@ cards:
     icon: mdi:tune-variant
     entities:
       - entity: number.ch592_pulse_threshold
-        name: 写入为
+        name: 机械表真实读数
       - entity: button.ch592_write_pulse_threshold
         name: 写入阈值
         tap_action:

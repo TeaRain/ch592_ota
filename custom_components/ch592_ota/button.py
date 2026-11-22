@@ -99,10 +99,10 @@ class Ch592OtaAbortButton(ButtonEntity):
 
 
 class Ch592WriteGasButton(ButtonEntity):
-    """Write the draft gas value (arms it when the device is not in OTA mode)."""
+    """Calibrate the HA offset from the draft mechanical meter reading."""
 
     _attr_has_entity_name = True
-    _attr_name = "Write gas value"
+    _attr_name = "Calibrate gas"
     _attr_icon = "mdi:content-save-edit"
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.CONFIG
@@ -136,8 +136,8 @@ class Ch592WriteGasButton(ButtonEntity):
     async def async_press(self) -> None:
         target = self.coordinator.data.get("gas_target")
         if target is None:
-            raise HomeAssistantError("请先在 Gas target 里设置要写入的燃气值")
-        await self.coordinator.async_set_gas(int(target))  # type: ignore[arg-type]
+            raise HomeAssistantError("请先输入燃气表的真实读数")
+        await self.coordinator.async_calibrate_gas(int(target))  # type: ignore[arg-type]
 
 
 class Ch592WriteThresholdButton(ButtonEntity):

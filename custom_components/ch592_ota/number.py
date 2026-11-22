@@ -1,10 +1,4 @@
-"""Draft values written over the OTA channel.
-
-The number entities never write the device by themselves: they only hold the
-value the user wants, and the write buttons / ``ch592_ota.set_gas`` /
-``ch592_ota.set_threshold`` services perform the actual DataFlash write while
-the device is in OTA mode.
-"""
+"""Calibration and threshold draft values for the CH592 integration."""
 
 from __future__ import annotations
 
@@ -37,10 +31,10 @@ async def async_setup_entry(
 
 
 class Ch592GasTargetNumber(NumberEntity):
-    """The value to write into the device's DataFlash."""
+    """Mechanical meter reading used to calculate the HA offset."""
 
     _attr_has_entity_name = True
-    _attr_name = "Gas target"
+    _attr_name = "Gas calibration reading"
     _attr_icon = "mdi:counter"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_native_min_value = 0
@@ -73,7 +67,7 @@ class Ch592GasTargetNumber(NumberEntity):
         target = self.coordinator.data.get("gas_target")
         if target is not None:
             return round(int(target) / 1000, 3)  # type: ignore[arg-type]
-        gas = self.coordinator.data.get("gas_value")
+        gas = self.coordinator.data.get("gas_total")
         return round(int(gas) / 1000, 3) if gas is not None else None  # type: ignore[arg-type]
 
     async def async_set_native_value(self, value: float) -> None:
@@ -81,7 +75,7 @@ class Ch592GasTargetNumber(NumberEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        gas = self.coordinator.data.get("gas_value")
+        gas = self.coordinator.data.get("gas_total")
         pending = self.coordinator.data.get("gas_pending")
         return {
             "device_value_m3": round(int(gas) / 1000, 3) if gas is not None else None,  # type: ignore[arg-type]

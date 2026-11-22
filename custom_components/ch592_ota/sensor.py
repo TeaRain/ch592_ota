@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from homeassistant.components.sensor import (
+    SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import PERCENTAGE, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -27,6 +28,9 @@ async def async_setup_entry(
             Ch592FirmwareVersionSensor(coordinator, entry),
             Ch592OtaStatusSensor(coordinator, entry),
             Ch592OtaProgressSensor(coordinator, entry),
+            Ch592RawGasCounterSensor(coordinator, entry),
+            Ch592GasTotalSensor(coordinator, entry),
+            Ch592GasConsumptionSensor(coordinator, entry),
         ]
     )
 
@@ -145,4 +149,70 @@ class Ch592OtaProgressSensor(Ch592OtaEntity):
             "uploaded": self.coordinator.data.get("uploaded"),
             "total": self.coordinator.data.get("total"),
         }
+
+
+class Ch592GasSensor(Ch592OtaEntity):
+    """Base for sensors whose values are stored in 0.001 m³ units."""
+
+    _attr_device_class = SensorDeviceClass.GAS
+    _attr_native_unit_of_measurement = UnitOfVolume.CUBIC_METERS
+    _attr_suggested_display_precision = 3
+    _data_key: str
+
+    def __init__(self, coordinator, entry, unique_name: str) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{self._address}_{unique_name}"
+
+    @property
+    def native_value(self) -> float | None:
+        value = self.coordinator.data.get(self._data_key)
+        return round(int(value) / 1000, 3) if value is not None else None
+
+
+class Ch592RawGasCounterSensor(Ch592GasSensor):
+    _attr_name = "Raw gas counter"
+    _attr_icon = "mdi:counter"
+    _attr_state_class = SensorStateClass.TOTAL
+    _data_key = "gas_value"
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry, "raw_gas_counter")
+
+
+class Ch592GasTotalSensor(Ch592GasSensor):
+    _attr_name = "Gas total"
+    _attr_icon = "mdi:gas-cylinder"
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _data_key = "gas_total"
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry, "gas_total")
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.data.get(self._data_key) is not None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        def m3(value):
+            return round(int(value) / 1000, 3) if value is not None else None
+        return {
+            "raw_value_m3": m3(self.coordinator.data.get("gas_value")),
+            "accepted_raw_value_m3": m3(self.coordinator.data.get("gas_accepted_raw")),
+            "offset_m3": m3(self.coordinator.data.get("gas_offset")),
+            "effective_offset_m3": m3(self.coordinator.data.get("gas_effective_offset")),
+            "wrap_count": self.coordinator.data.get("gas_wraps"),
+            "calibrated_at": self.coordinator.data.get("gas_calibrated_at"),
+            "raw_reset_detected": self.coordinator.data.get("gas_reset_detected"),
+        }
+
+
+class Ch592GasConsumptionSensor(Ch592GasSensor):
+    _attr_name = "Gas consumption total"
+    _attr_icon = "mdi:chart-line"
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _data_key = "gas_consumption_total"
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry, "gas_consumption_total")
 

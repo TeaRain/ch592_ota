@@ -10,12 +10,14 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 - 集成仓库：https://gitee.com/zigbridge/ch592_ota ｜ https://github.com/TeaRain/ch592_ota
 - 固件仓库：https://gitee.com/zigbridge/ch592-gas-broadcaster ｜ https://github.com/TeaRain/ch592-gas-broadcaster
 
-## 当前状态（2026-11-15 实测）
+## 当前版本与历史实测
+
+> 1.4.7 / 0.7.0 已完成构建和自动化测试，尚未进行实机 OTA；下表功耗数据来自历史实测。
 
 | 项目 | 值 |
 |------|-----|
-| 集成版本 | **0.6.0** |
-| 固件版本 | **1.4.1** |
+| 集成版本 | **0.7.0** |
+| 固件版本 | **1.4.7** |
 | 一次升级耗时 | **约 35~40 秒**（128 字节分片 + CRC32 一次校验） |
 | 供电实测 | CR2032 新电池，OTA 负载下 **3.04 V**，全程无下探 |
 | 结论 | **CR2032 可以完成 OTA**；之前跑不下来是耗时太长（约 20 分钟） |
@@ -136,7 +138,7 @@ https://gitee.com/zigbridge/ch592-gas-broadcaster/raw/master/firmware/manifest.j
 2. 集成看到 OTA 广播 → 如果清单里有新版本，**自动下载并开始升级**；
 3. 约 40 秒结束，设备重启回到普通广播，版本号变成新版本。
 
-如果已是最新版本，进入 OTA 模式不会做任何升级，设备 8 分钟后自动退出。
+如果已是最新版本，进入 OTA 模式不会做任何升级，设备约 5 分钟后自动退出。
 
 想改回手动：**设置 → 设备与服务 → CH592 OTA → 配置 → 设备进入 OTA 模式时自动
 升级** 取消勾选。
@@ -160,38 +162,35 @@ data:
 
 取消升级：`button.*_abort_ota` 或 `ch592_ota.abort`。
 
-## 燃气值校正（0.5.0 + 固件 1.4.0）
+## 燃气真实读数、校准与统计（0.7.0）
 
-不用再长按 +/- 刷数值，可以在 HA 里直接把读数写进去。
+集成把设备 `0x4C` 当作原始累计计数，提供三个传感器：
 
-1. 在 `number.*_gas_target` 里填目标值（单位 m³，0.001 分辨率）——
-   **它只是草稿，填了不会写设备**；
-2. 点 `button.*_write_gas_value`：
-   - 设备已在 OTA 模式 → 立刻写入并复位；
-   - 设备不在 OTA 模式 → 记为「待写入」（15 分钟有效），此时长按 B 3 秒，
-     集成看到 OTA 广播后会**先写燃气值、不升级**；
-3. 想放弃待写入：点 `button.*_cancel_pending_gas_write` 或调
-   `ch592_ota.cancel_gas`。
+| 实体 | 用途 |
+|------|------|
+| `sensor.*_raw_gas_counter` | 设备原始计数，只用于诊断和增量计算 |
+| `sensor.*_gas_total` | 燃气表真实读数，用于仪表板显示 |
+| `sensor.*_gas_consumption_total` | 统计累计值，用于 Derivative、Utility Meter 和自动化 |
 
-服务方式：
+### 校准
 
-```yaml
-action: ch592_ota.set_gas
-data:
-  value: 3050.79     # m³
-```
+1. 等收到一次普通 BTHome 广播，在 `number.*_gas_target`（显示为 Gas calibration
+   reading）输入机械燃气表的真实读数；
+2. 点 `button.*_calibrate_gas`（旧实体 ID 可能仍为 `button.*_write_gas_value`）；
+3. 集成计算并持久化 `offset = 真实表读数 - 当前 raw`，随后 `gas_total` 按有效
+   原始增量增加。**不需要按 B、不需要进入 OTA，也不会改写设备 DataFlash。**
 
-设备端行为（固件 1.4.2 起）：燃气值存在**追加式日志**里——两个 4 KB 块、每块
-256 条 16 字节记录，每次保存追加一条，块写满才擦除另一块并切换，平均每 256 次
-保存才擦一次 Flash。每条写完都读回校验，通过才回成功，然后约 0.2 秒后复位让
-广播器加载新值；写入失败时旧值不受影响，掉电最多丢正在写的那一条。
+`offset` 可以为负数。`ch592_ota.set_gas` 保留为兼容别名，但现在也只执行 HA
+校准，不再写设备，也不再产生 OTA 待写任务。
 
-> 1.4.2 会把记录追加到块中间，降级到 1.3.x / 1.4.x 老固件前请先在集成里重写
-> 一次燃气值（老固件只读块首记录）。
+### 统计与防跳变
 
-> **优先级规则**：有待写入的燃气值时，按 B 只写燃气值、不自动升级；
-> `update` 实体仍会显示有新版本，之后再按一次 B 即可升级。
-> 升级进行中点写入会被拒绝（避免两个任务抢同一个连接）。
+- 显示当前机械表读数使用 `gas_total`；
+- Derivative 和 Utility Meter 的源使用 `gas_consumption_total`；
+- 校准只改变真实读数，不改变统计消耗，因此不会人为制造一次用气；
+- 旧广播重放、异常回退或设备计数归零时保持两个输出值，并暴露
+  `raw_reset_detected` 属性；重新校准后才允许真实读数向下变化；
+- 原始计数按 uint32 自然回绕，模数为 2^32。
 
 ## 采样阈值校正（0.6.0 + 固件 1.4.1）
 
@@ -218,65 +217,15 @@ data:
 实测余量 190~460，默认 100 已经留足余量，一般只在换表型或环境变化时微调 80~300。
 `sensor.*_ota_status` 的 `device_threshold` 属性显示设备当前生效值。
 
-## 统计防负数（模板传感器，0.6.4 起不再由集成提供）
+## 从旧燃气模板迁移
 
-原始 BTHome `0x4C` 值会**向后跳**，有两个来源：
+先校准并核对 `gas_total`，再把 Derivative、Utility Meter 和自定义统计的源改为
+`gas_consumption_total`。不要重复添加 `offset + raw` 模板，也不要同时保留两套
+防回退计算。现有 Derivative / Utility Meter helper 可以保留以延续其历史。
 
-- HA 重启时，蓝牙管理器会把扫描器保存的历史广播立即重放一次（HA `bluetooth`
-  的 `_async_replay_history_for_callback`）；保存的是旧广告时，燃气值会短暂回退；
-- 固件 ≤ 1.4.1 忽略 `EEPROM_WRITE` 返回值，掉电后可能从 DataFlash 里较旧的记录启动
-  （1.4.2 起已改为追加日志 + 写后校验）。
-
-这属于消费侧的统计问题，不该由 OTA 集成承担，所以放在模板里：一个只增不减的
-累计值，回退持续 10 分钟才接受。平时的旧包重放几分钟内就会被真实广播纠正，不会
-传下去；真实的持久回退或人工改小读数会在 10 分钟后放行。
-
-把下面加到 `configuration.yaml`（或 packages）：
-
-```yaml
-template:
-  - triggers:
-      - trigger: state
-        entity_id: sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_gas
-        id: change
-      # 燃气不动时原始实体不会产生状态变化，靠定时触发把当前值带进来
-      - trigger: time_pattern
-        minutes: "/5"
-        id: poll
-      - trigger: state
-        entity_id: sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_gas
-        for: "00:10:00"
-        id: stable
-    sensor:
-      - name: Gas total guarded
-        unique_id: gas_total_guarded_bc6f
-        unit_of_measurement: "m³"
-        device_class: gas
-        state_class: total_increasing
-        icon: mdi:gas-cylinder
-        state: >
-          {% set cur = states('sensor.sheng_huo_yang_tai_bthome_sensor_bc6f_gas') | float(-1) %}
-          {% set prev = this.state | float(0) %}
-          {% if cur < 0 %}
-            {{ prev }}
-          {% elif trigger.id in ('change', 'poll') and cur < prev
-                and not (prev > 99990 and cur < 10) %}
-            {{ prev }}
-          {% else %}
-            {{ cur }}
-          {% endif %}
-```
-
-实体 ID 跟随 `name`：`sensor.gas_total_guarded`。把 Derivative（消耗速率）和
-utility_meter（今日/本月）的源改成它即可，历史统计继续累计。
-
-燃气不走时原始实体不会有状态变化，所以额外加了每 5 分钟的 `time_pattern`
-触发：新建/重载后几分钟内就能拿到当前值，不会一直停在 `unknown`；定时触发
-同样受向后跳保护。
-
-模板传感器用 `this.state` 继承上一个值，HA 重启后会自动恢复，不需要额外 helper。
-真实向下校正（换表、人工改小）会在 10 分钟后被接受，届时消耗统计会出现一次负
-跳变；如果不想记进消耗，改完后重置对应的 utility_meter。
+观察几次脉冲并确认无负速率、重复 offset 或校准跳变后，再停用旧
+`sensor.gas_total_guarded` 模板。若切换源时周期值出现跳变，先记录当前周期值，
+必要时用 `utility_meter.calibrate` 修正，不要直接删除历史。
 
 ## 实体与观测属性
 
@@ -289,11 +238,11 @@ utility_meter（今日/本月）的源改成它即可，历史统计继续累计
 | `sensor.<device>_firmware_version` | 设备通过 BTHome `0x53` 报告的固件版本 |
 | `button.<device>_abort_ota` | 取消升级 |
 | `button.<device>_check_for_updates` | 立即检查固件清单 |
-| `number.<device>_gas_target` | 要写入的燃气值（草稿，不写设备） |
-| `button.<device>_write_gas_value` | 写入燃气值 / 记为待写入 |
+| `number.<device>_gas_target` | 机械表真实读数校准输入（只写 HA offset） |
+| `button.<device>_write_gas_value` | 校准 HA 真实读数，不写设备 |
 | `number.<device>_pulse_threshold` | 采样阈值草稿（20~2000，默认 100） |
 | `button.<device>_write_pulse_threshold` | 写入阈值 / 记为待写入 |
-| `button.<device>_cancel_pending_writes` | 取消所有待写入（燃气值 + 阈值） |
+| `button.<device>_cancel_pending_writes` | 取消待写入阈值 |
 
 `sensor.<device>_ota_status` 的属性是排查问题的主要入口：
 
@@ -319,7 +268,7 @@ utility_meter（今日/本月）的源改成它即可，历史统计继续累计
 
 ## 注意事项
 
-1. **设备的 OTA 时间窗**：进入 OTA 模式后，**无连接 8 分钟**、**总时长 24 分钟**
+1. **设备的 OTA 时间窗**：进入 OTA 模式后，**无连接约 5 分钟**、**总时长约 15 分钟**
    会自动复位退出。失败后重试必须**重新长按 B**。
 2. **升级期间没有 BTHome 数据**：OTA 模式下设备只广播 OTA 服务，燃气/电量停在
    最后一次的值，这是正常的。
