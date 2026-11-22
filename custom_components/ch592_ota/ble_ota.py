@@ -62,6 +62,7 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, str, int, int], None]
+FAST_CRC32_PROTOCOL = 8
 
 
 class OtaError(Exception):
@@ -203,12 +204,26 @@ class Ch592OtaClient:
             self._notify(10, "uploading", 0, len(self._image))
             await self._async_program()
 
-            # The firmware's CRC32 command blocks its BLE task long enough to
-            # drop some ESPHome proxy links. Falling back to VERIFY on that same
-            # dead connection cannot work, so use the bounded per-chunk VERIFY
-            # path directly. It also pinpoints the first mismatched byte.
-            self._notify(86, "verifying", 0, len(self._image))
-            await self._async_verify()
+            # Protocol 8 uses a table-driven device CRC that finishes before the
+            # BLE link supervision expires. Older firmware keeps the bounded
+            # VERIFY path: its bitwise CRC can drop ESPHome proxy connections.
+            verified = False
+            if (
+                info.get("features", 0) & OTA_FEATURE_CRC32
+                and int(info.get("protocol", 1)) >= FAST_CRC32_PROTOCOL
+            ):
+                try:
+                    await self._async_crc32_verify()
+                    verified = True
+                except OtaError as err:
+                    if self._client is None or not self._client.is_connected:
+                        raise
+                    # A CRC mismatch/read error on a live link can still fall
+                    # back to the authoritative first-bad-byte comparison.
+                    _LOGGER.warning("CRC32 校验未通过，退回逐字节校验: %s", err)
+            if not verified:
+                self._notify(86, "verifying", 0, len(self._image))
+                await self._async_verify()
 
             self._notify(97, "rebooting")
             await self._async_end()

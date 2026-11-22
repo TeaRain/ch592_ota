@@ -57,7 +57,7 @@ class FakeClient:
 
 
 class BleOtaReliabilityTests(unittest.IsolatedAsyncioTestCase):
-    async def test_crc_capability_uses_safe_byte_verification(self):
+    async def _run_with_protocol(self, protocol):
         client = ble_ota.Ch592OtaClient(
             object(), "AA:BB:CC:DD:EE:FF", b"\x6f\x00\x00\x00", lambda *args: None
         )
@@ -72,15 +72,13 @@ class BleOtaReliabilityTests(unittest.IsolatedAsyncioTestCase):
                 "features": const.OTA_FEATURE_PAGE_SPLIT | const.OTA_FEATURE_CRC32,
                 "image_size": const.IMAGE_SIZE,
                 "block_size": const.FLASH_BLOCK_SIZE,
-                "protocol": 6,
+                "protocol": protocol,
                 "vdd": 3000,
             }
         )
         client._async_erase = AsyncMock()
         client._async_program = AsyncMock()
-        client._async_crc32_verify = AsyncMock(
-            side_effect=ble_ota.OtaMtuError("connection lost during CRC32")
-        )
+        client._async_crc32_verify = AsyncMock()
         client._async_verify = AsyncMock()
         client._async_end = AsyncMock()
 
@@ -89,11 +87,22 @@ class BleOtaReliabilityTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ble_ota, "establish_connection", connect),
         ):
             await client.async_run()
+        return client
 
+    async def test_legacy_crc_capability_uses_safe_byte_verification(self):
+        client = await self._run_with_protocol(7)
         client._async_erase.assert_awaited_once()
         client._async_program.assert_awaited_once()
         client._async_crc32_verify.assert_not_called()
         client._async_verify.assert_awaited_once()
+        client._async_end.assert_awaited_once()
+
+    async def test_fast_crc_protocol_uses_single_round_trip_verification(self):
+        client = await self._run_with_protocol(8)
+        client._async_erase.assert_awaited_once()
+        client._async_program.assert_awaited_once()
+        client._async_crc32_verify.assert_awaited_once()
+        client._async_verify.assert_not_called()
         client._async_end.assert_awaited_once()
 
 
