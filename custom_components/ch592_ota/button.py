@@ -38,7 +38,7 @@ class Ch592FirmwareCheckButton(ButtonEntity):
     """Check the firmware manifest right now instead of waiting for the timer."""
 
     _attr_has_entity_name = True
-    _attr_name = "Check for updates"
+    _attr_name = "检查固件更新"
     _attr_icon = "mdi:cloud-refresh"
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
@@ -76,7 +76,7 @@ class Ch592OtaAbortButton(ButtonEntity):
     """Cancel a running OTA upload without opening Developer Tools."""
 
     _attr_has_entity_name = True
-    _attr_name = "Abort OTA"
+    _attr_name = "取消升级"
     _attr_icon = "mdi:cancel"
     _attr_should_poll = False
 
@@ -106,7 +106,7 @@ class Ch592WriteGasButton(ButtonEntity):
     """Calibrate the HA offset from the draft mechanical meter reading."""
 
     _attr_has_entity_name = True
-    _attr_name = "Calibrate gas"
+    _attr_name = "校准燃气表读数"
     _attr_icon = "mdi:content-save-edit"
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.CONFIG
@@ -153,7 +153,7 @@ class Ch592WriteThresholdButton(ButtonEntity):
     """Write the draft pulse threshold (arms it when not in OTA mode)."""
 
     _attr_has_entity_name = True
-    _attr_name = "Write pulse threshold"
+    _attr_name = "写入采样阈值"
     _attr_icon = "mdi:tune"
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.CONFIG
@@ -197,7 +197,7 @@ class Ch592CancelPendingButton(ButtonEntity):
     """Drop armed writes so pressing B upgrades again."""
 
     _attr_has_entity_name = True
-    _attr_name = "Cancel pending writes"
+    _attr_name = "取消待写入"
     _attr_icon = "mdi:close-circle-outline"
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.CONFIG

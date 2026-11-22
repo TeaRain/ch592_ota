@@ -25,7 +25,7 @@ class Ch592OtaModeSensor(BinarySensorEntity):
     """Whether the device is advertising the connectable OTA service."""
 
     _attr_has_entity_name = True
-    _attr_name = "OTA mode"
+    _attr_name = "OTA模式"
     _attr_icon = "mdi:bluetooth-connect"
     _attr_should_poll = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC

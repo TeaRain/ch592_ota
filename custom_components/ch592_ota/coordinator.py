@@ -215,8 +215,11 @@ class Ch592OtaCoordinator:
             fields = parse_bthome_fields(service_info)
             version = fields.get("version")
             gas = fields.get("gas")
+            threshold = fields.get("threshold")
             if gas is not None:
                 self._update_raw_gas(int(gas))
+            if threshold is not None:
+                self.data["threshold"] = int(threshold)
             if version is not None:
                 self._seen_bthome = True
                 self.data["firmware_version"] = str(version)
@@ -224,7 +227,7 @@ class Ch592OtaCoordinator:
                 self.data["last_seen"] = datetime.now(UTC)
                 self.data["ota_mode"] = False
                 self._notify()
-            elif gas is not None:
+            elif gas is not None or threshold is not None:
                 self._notify()
 
         # Throttled refresh so the diagnostic attributes stay current.

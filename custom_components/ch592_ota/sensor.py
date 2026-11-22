@@ -28,6 +28,7 @@ async def async_setup_entry(
             Ch592FirmwareVersionSensor(coordinator, entry),
             Ch592OtaStatusSensor(coordinator, entry),
             Ch592OtaProgressSensor(coordinator, entry),
+            Ch592CurrentThresholdSensor(coordinator, entry),
             Ch592RawGasCounterSensor(coordinator, entry),
             Ch592GasTotalSensor(coordinator, entry),
             Ch592GasConsumptionSensor(coordinator, entry),
@@ -65,7 +66,7 @@ class Ch592OtaEntity(SensorEntity):
 class Ch592FirmwareVersionSensor(Ch592OtaEntity):
     """Firmware version reported in BTHome text object 0x53."""
 
-    _attr_name = "Firmware version"
+    _attr_name = "固件版本"
     _attr_icon = "mdi:tag-text"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
@@ -91,7 +92,7 @@ class Ch592FirmwareVersionSensor(Ch592OtaEntity):
 class Ch592OtaStatusSensor(Ch592OtaEntity):
     """Current OTA state: idle, uploading, verifying, success, failed..."""
 
-    _attr_name = "OTA status"
+    _attr_name = "升级状态"
     _attr_icon = "mdi:update"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
@@ -129,7 +130,7 @@ class Ch592OtaStatusSensor(Ch592OtaEntity):
 class Ch592OtaProgressSensor(Ch592OtaEntity):
     """Upload progress in percent."""
 
-    _attr_name = "OTA progress"
+    _attr_name = "升级进度"
     _attr_icon = "mdi:progress-upload"
     _attr_native_unit_of_measurement = PERCENTAGE
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -151,6 +152,23 @@ class Ch592OtaProgressSensor(Ch592OtaEntity):
         }
 
 
+class Ch592CurrentThresholdSensor(Ch592OtaEntity):
+    """Live threshold reported by normal advertisements after P/N changes."""
+
+    _attr_name = "当前采样阈值（P/N按键调整）"
+    _attr_icon = "mdi:tune-variant"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{self._address}_current_threshold"
+
+    @property
+    def native_value(self) -> int | None:
+        value = self.coordinator.data.get("threshold")
+        return int(value) if value is not None else None
+
+
 class Ch592GasSensor(Ch592OtaEntity):
     """Base for sensors whose values are stored in 0.001 m³ units."""
 
@@ -170,7 +188,7 @@ class Ch592GasSensor(Ch592OtaEntity):
 
 
 class Ch592RawGasCounterSensor(Ch592GasSensor):
-    _attr_name = "Raw gas counter"
+    _attr_name = "设备原始计数"
     _attr_icon = "mdi:counter"
     _attr_state_class = SensorStateClass.TOTAL
     _data_key = "gas_value"
@@ -180,7 +198,7 @@ class Ch592RawGasCounterSensor(Ch592GasSensor):
 
 
 class Ch592GasTotalSensor(Ch592GasSensor):
-    _attr_name = "Gas total"
+    _attr_name = "燃气表读数"
     _attr_icon = "mdi:gas-cylinder"
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _data_key = "gas_total"
@@ -208,7 +226,7 @@ class Ch592GasTotalSensor(Ch592GasSensor):
 
 
 class Ch592GasConsumptionSensor(Ch592GasSensor):
-    _attr_name = "Gas consumption total"
+    _attr_name = "累计用气量（统计）"
     _attr_icon = "mdi:chart-line"
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _data_key = "gas_consumption_total"

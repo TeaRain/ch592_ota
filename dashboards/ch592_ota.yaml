@@ -36,7 +36,7 @@ cards:
         icon: mdi:signal
 
   - type: entities
-    title: OTA
+    title: 固件升级
     icon: mdi:update
     entities:
       - entity: sensor.sheng_huo_yang_tai_ch592_firmware_version
@@ -68,8 +68,10 @@ cards:
     title: 采样阈值校正
     icon: mdi:tune-variant
     entities:
+      - entity: sensor.sheng_huo_yang_tai_ch592_current_threshold
+        name: 当前采样阈值（P/N按键调整）
       - entity: number.sheng_huo_yang_tai_ch592_pulse_threshold
-        name: 采样阈值
+        name: 采样阈值（待写入）
       - entity: button.sheng_huo_yang_tai_ch592_write_pulse_threshold
         name: 写入阈值
         tap_action:

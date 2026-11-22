@@ -94,6 +94,16 @@ def _install_dependencies():
         SensorDeviceClass=types.SimpleNamespace(GAS="gas"),
     )
     _module("homeassistant.components.button", ButtonEntity=type("ButtonEntity", (), {}))
+    _module(
+        "homeassistant.components.binary_sensor",
+        BinarySensorEntity=type("BinarySensorEntity", (), {}),
+    )
+    _module(
+        "homeassistant.components.update",
+        UpdateEntity=type("UpdateEntity", (), {}),
+        UpdateDeviceClass=types.SimpleNamespace(FIRMWARE="firmware"),
+        UpdateEntityFeature=types.SimpleNamespace(INSTALL=1, PROGRESS=2),
+    )
     _module("homeassistant.components.number", NumberEntity=type("NumberEntity", (), {}), NumberMode=types.SimpleNamespace(BOX="box"))
     _module(
         "homeassistant.components.bluetooth",
@@ -390,6 +400,58 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(total.native_value, 0.91)
         self.assertEqual(consumption.native_value, 0.01)
         self.assertEqual(total.extra_state_attributes["offset_m3"], -0.1)
+
+    async def test_threshold_advertisement_drives_chinese_current_sensor(self):
+        info = types.SimpleNamespace(
+            name="GasMeter OTA",
+            service_uuids=[],
+            service_data={"0000fcd2-0000-1000-8000-00805f9b34fb": b"payload"},
+            raw=bytes.fromhex("0201061616d2fc40"),
+        )
+        with patch.object(
+            coordinator_module,
+            "parse_bthome_fields",
+            return_value={"version": "1.4.9", "gas": 60, "threshold": 140},
+        ):
+            self.coordinator._async_bt_callback(info, None)
+        self.assertEqual(self.coordinator.data["threshold"], 140)
+        self.assertEqual(self.coordinator.data["firmware_version"], "1.4.9")
+
+        _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
+        module = _load(f"{PACKAGE}.sensor", REPO / "custom_components/ch592_ota/sensor.py")
+        sensor = module.Ch592CurrentThresholdSensor(self.coordinator, self.entry)
+        self.assertEqual(sensor.native_value, 140)
+        self.assertEqual(sensor._attr_name, "当前采样阈值（P/N按键调整）")
+        self.assertTrue(sensor._attr_unique_id.endswith("_current_threshold"))
+
+    async def test_device_page_entity_labels_are_chinese(self):
+        _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
+        sensor = _load(f"{PACKAGE}.sensor", REPO / "custom_components/ch592_ota/sensor.py")
+        button = _load(f"{PACKAGE}.button", REPO / "custom_components/ch592_ota/button.py")
+        number = _load(f"{PACKAGE}.number", REPO / "custom_components/ch592_ota/number.py")
+        binary = _load(f"{PACKAGE}.binary_sensor", REPO / "custom_components/ch592_ota/binary_sensor.py")
+        update = _load(f"{PACKAGE}.update", REPO / "custom_components/ch592_ota/update.py")
+        expected = [
+            (sensor.Ch592FirmwareVersionSensor, "固件版本"),
+            (sensor.Ch592OtaStatusSensor, "升级状态"),
+            (sensor.Ch592OtaProgressSensor, "升级进度"),
+            (sensor.Ch592RawGasCounterSensor, "设备原始计数"),
+            (sensor.Ch592GasTotalSensor, "燃气表读数"),
+            (sensor.Ch592GasConsumptionSensor, "累计用气量（统计）"),
+            (sensor.Ch592CurrentThresholdSensor, "当前采样阈值（P/N按键调整）"),
+            (binary.Ch592OtaModeSensor, "OTA模式"),
+            (update.Ch592FirmwareUpdateEntity, "固件更新"),
+            (button.Ch592FirmwareCheckButton, "检查固件更新"),
+            (button.Ch592OtaAbortButton, "取消升级"),
+            (button.Ch592WriteGasButton, "校准燃气表读数"),
+            (button.Ch592WriteThresholdButton, "写入采样阈值"),
+            (button.Ch592CancelPendingButton, "取消待写入"),
+            (number.Ch592GasTargetNumber, "燃气表实际读数（保存即校准）"),
+            (number.Ch592ThresholdNumber, "采样阈值（待写入）"),
+        ]
+        for entity_class, label in expected:
+            with self.subTest(entity=entity_class.__name__):
+                self.assertEqual(entity_class._attr_name, label)
 
     async def test_calibrate_button_does_not_use_ble(self):
         _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")

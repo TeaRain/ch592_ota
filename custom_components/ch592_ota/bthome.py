@@ -81,7 +81,8 @@ def has_bthome_data(service_info: BluetoothServiceInfoBleak) -> bool:
 def parse_bthome_fields(service_info: BluetoothServiceInfoBleak) -> dict[str, object]:
     """Return the objects this integration cares about from a BTHome v2 ad.
 
-    ``version`` is the 0x53 text object, ``gas`` the 0x4C counter in 0.001 m³.
+    ``version`` is 0x53 text, ``gas`` the 0x4C counter in 0.001 m³,
+    and ``threshold`` the 0x3E uint32 count used by firmware >= 1.4.9.
     """
     fields: dict[str, object] = {}
     data = _service_data(service_info)
@@ -115,6 +116,8 @@ def parse_bthome_fields(service_info: BluetoothServiceInfoBleak) -> dict[str, ob
                 pass
         elif object_id == 0x4C and len(value) == 4:
             fields["gas"] = int.from_bytes(value, "little")
+        elif object_id == 0x3E and len(value) == 4:
+            fields["threshold"] = int.from_bytes(value, "little")
     return fields
 
 

@@ -95,7 +95,7 @@ class Ch592ThresholdNumber(NumberEntity):
     """
 
     _attr_has_entity_name = True
-    _attr_name = "Pulse threshold"
+    _attr_name = "采样阈值（待写入）"
     _attr_icon = "mdi:tune-variant"
     _attr_native_min_value = THRESHOLD_MIN
     _attr_native_max_value = THRESHOLD_MAX

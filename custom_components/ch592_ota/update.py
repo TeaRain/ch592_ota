@@ -44,7 +44,7 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
     """Firmware update backed by the bundled .bin and its .json sidecar."""
 
     _attr_has_entity_name = True
-    _attr_name = "Firmware"
+    _attr_name = "固件更新"
     _attr_should_poll = False
     _attr_device_class = UpdateDeviceClass.FIRMWARE
     _attr_supported_features = (
