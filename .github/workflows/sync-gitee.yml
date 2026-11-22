@@ -1,0 +1,27 @@
+name: Sync release from Gitee
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mirror the published Gitee repository
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://gitee.com/zigbridge/ch592_ota.git /tmp/ch592-upstream
+          rsync -a --delete --exclude=.git --exclude=.github /tmp/ch592-upstream/ ./
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "release: CH592 OTA integration 0.7.0" -m "Co-Authored-By: Claude Code <noreply@anthropic.com>"
+            git push origin master
+          fi
