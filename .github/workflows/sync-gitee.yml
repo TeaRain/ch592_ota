@@ -16,7 +16,16 @@ jobs:
       - name: Mirror Gitee and publish 0.8.0
         run: |
           set -euo pipefail
-          git clone --depth 1 https://gitee.com/zigbridge/ch592_ota.git /tmp/ch592-upstream
+          cloned=false
+          for attempt in 1 2 3 4; do
+            rm -rf /tmp/ch592-upstream
+            if timeout 90 git clone --depth 1 https://gitee.com/zigbridge/ch592_ota.git /tmp/ch592-upstream; then
+              cloned=true
+              break
+            fi
+            sleep 10
+          done
+          "$cloned"
           rsync -a --delete --exclude=.git --exclude=.github /tmp/ch592-upstream/ ./
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -24,7 +33,10 @@ jobs:
           if ! git diff --cached --quiet; then
             version=$(jq -er '.version' custom_components/ch592_ota/manifest.json)
             git commit -m "release: CH592 OTA integration ${version}" -m "Co-Authored-By: Claude Code <noreply@anthropic.com>"
-            git push origin master
+            if ! git push origin master; then
+              git pull --rebase origin master
+              git push origin master
+            fi
           fi
       - name: Create the integration release
         env:
