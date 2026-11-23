@@ -214,7 +214,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
     async def async_handle_cancel_threshold(call: ServiceCall) -> None:
         coordinator = _get_coordinator(hass, call.data.get(CONF_ADDRESS))
-        coordinator.cancel_threshold()
+        await coordinator.async_cancel_threshold()
 
     hass.services.async_register(
         DOMAIN,

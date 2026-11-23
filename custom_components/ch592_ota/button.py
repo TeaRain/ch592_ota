@@ -141,4 +141,4 @@ class Ch592CancelPendingButton(ButtonEntity):
 
     async def async_press(self) -> None:
         self.coordinator.cancel_gas()
-        self.coordinator.cancel_threshold()
+        await self.coordinator.async_cancel_threshold()

@@ -35,7 +35,6 @@ from .const import (
     DEFAULT_AUTO_INSTALL,
     DEFAULT_FIRMWARE,
     DOMAIN,
-    GAS_SET_PENDING_SECONDS,
     IMAGE_SIZE,
     OTA_SERVICE_UUID,
     REBOOT_TIMEOUT,
@@ -125,7 +124,10 @@ class Ch592OtaCoordinator:
         self.data["threshold_target"] = None
         self.data["threshold_pending"] = None
         self.data["threshold_result"] = None
-        self._threshold_pending_until = 0.0
+        self._threshold_store = Store(
+            hass, 1, f"{DOMAIN}.{getattr(entry, 'entry_id', self.address)}.threshold"
+        )
+        self._threshold_request_generation = 0
 
     # ------------------------------------------------------------- lifecycle
 
@@ -139,6 +141,7 @@ class Ch592OtaCoordinator:
             _LOGGER.warning("燃气校准状态无效，等待重新校准: %s", err)
             self.gas = GasAccounting()
         self._sync_gas_data()
+        await self._async_load_threshold_state()
         self._unregister_bt = async_register_callback(
             self.hass,
             self._async_bt_callback,
@@ -158,6 +161,7 @@ class Ch592OtaCoordinator:
             self._unregister_bt()
             self._unregister_bt = None
         await self.async_abort(quiet=True)
+        await self._async_save_threshold_state()
 
     # -------------------------------------------------------------- listeners
 
@@ -388,17 +392,62 @@ class Ch592OtaCoordinator:
     # ------------------------------------------------------- pulse threshold
 
     def _threshold_pending_value(self) -> int | None:
-        """The armed threshold, or None when nothing is armed / it expired."""
+        """Return the pending threshold until it is written or cancelled."""
         value = self.data.get("threshold_pending")
-        if value is None:
-            return None
-        now = asyncio.get_running_loop().time()
-        if now > self._threshold_pending_until:
+        return int(value) if value is not None else None  # type: ignore[arg-type]
+
+    async def _async_load_threshold_state(self) -> None:
+        """Restore a threshold that is waiting for the next OTA window."""
+        try:
+            stored = await self._threshold_store.async_load()
+            if not stored:
+                return
+            if not isinstance(stored, dict):
+                raise ValueError("threshold state must be a dict")
+            pending = stored.get("pending")
+            target = stored.get("target")
+            if pending is not None and (
+                type(pending) is not int
+                or not THRESHOLD_MIN <= pending <= THRESHOLD_MAX
+            ):
+                raise ValueError("invalid pending threshold")
+            if target is not None and (
+                type(target) is not int
+                or not THRESHOLD_MIN <= target <= THRESHOLD_MAX
+            ):
+                raise ValueError("invalid threshold target")
+            self.data["threshold_pending"] = pending
+            self.data["threshold_target"] = target if target is not None else pending
+            if pending is not None:
+                self.data["threshold_result"] = "等待下次 OTA 窗口写入（按 B 或最长 3 天）"
+        except (TypeError, ValueError) as err:
+            _LOGGER.warning("待写阈值状态无效，已清除: %s", err)
             self.data["threshold_pending"] = None
-            self.data["threshold_result"] = "待写入已超时取消"
-            self._notify()
-            return None
-        return int(value)  # type: ignore[arg-type]
+            self.data["threshold_target"] = None
+            await self._async_save_threshold_state()
+
+    def _threshold_state_for_store(self) -> dict[str, int | None]:
+        return {
+            "pending": self.data.get("threshold_pending"),  # type: ignore[dict-item]
+            "target": self.data.get("threshold_target"),  # type: ignore[dict-item]
+        }
+
+    async def _async_save_threshold_state(self) -> None:
+        """Save until the persisted state matches the latest request.
+
+        A store write can finish after a newer set/cancel operation or after a
+        scheduled BLE write cleared pending. Repeating with a fresh snapshot
+        prevents an older save from resurrecting stale state after HA restart.
+        """
+        while True:
+            generation = self._threshold_request_generation
+            snapshot = self._threshold_state_for_store()
+            await self._threshold_store.async_save(snapshot)
+            if (
+                generation == self._threshold_request_generation
+                and snapshot == self._threshold_state_for_store()
+            ):
+                return
 
     @callback
     def set_threshold_target(self, value: int) -> None:
@@ -406,36 +455,54 @@ class Ch592OtaCoordinator:
         self.data["threshold_target"] = int(value)
         self._notify()
 
-    @callback
-    def cancel_threshold(self) -> None:
+    async def async_cancel_threshold(self) -> None:
+        """Cancel the pending write and persist the cancellation."""
+        self._threshold_request_generation += 1
         self.data["threshold_pending"] = None
         self.data["threshold_result"] = "已取消待写入"
-        self._threshold_pending_until = 0.0
+        await self._async_save_threshold_state()
         self._notify()
 
     async def async_set_threshold(self, value: int) -> dict[str, object]:
-        """Write now when the device is in OTA mode, otherwise arm it."""
+        """Write in OTA mode or persist until the next manual/timed OTA window."""
         if not THRESHOLD_MIN <= value <= THRESHOLD_MAX:
             raise HomeAssistantError(
                 f"阈值超出范围：{value}（{THRESHOLD_MIN}~{THRESHOLD_MAX}）"
             )
         self._assert_operation_available()
+        self._threshold_request_generation += 1
+        request_generation = self._threshold_request_generation
 
         self.data["threshold_target"] = int(value)
+        self.data["threshold_pending"] = int(value)
+        self.data["threshold_result"] = (
+            None
+            if self.data.get("ota_mode")
+            else "等待下次 OTA 窗口写入（按 B 或最长 3 天）"
+        )
+        await self._async_save_threshold_state()
+        if (
+            self.data.get("threshold") == value
+            and self.data.get("threshold_result") == f"已写入阈值 {value}"
+            and self.data.get("threshold_pending") is None
+        ):
+            # The scheduled OTA writer completed the same request while the
+            # foreground setter was waiting for its storage write.
+            return {"result": "written", "threshold": value}
+        if (
+            request_generation != self._threshold_request_generation
+            or self._threshold_pending_value() != value
+        ):
+            raise HomeAssistantError("阈值请求已被新值或取消操作替代")
         if self.data.get("ota_mode"):
             await self._async_write_threshold(value)
             return {"result": "written", "threshold": value}
 
-        self.data["threshold_pending"] = int(value)
-        self.data["threshold_result"] = None
-        self._threshold_pending_until = (
-            asyncio.get_running_loop().time() + GAS_SET_PENDING_SECONDS
-        )
         self._notify()
         return {
             "result": "armed",
             "threshold": value,
-            "note": "请长按 B 键 3 秒，进入 OTA 模式后会写入（15 分钟内有效）",
+            "note": "将在下次 OTA 窗口写入：可按 B 立即触发，或等待每 3 天的定时窗口",
         }
 
     @_track_config_operation
@@ -458,7 +525,7 @@ class Ch592OtaCoordinator:
             threshold=int(value),
             threshold_result=f"已写入阈值 {value}",
         )
-        self._threshold_pending_until = 0.0
+        await self._async_save_threshold_state()
         self._notify()
 
     @callback
@@ -479,11 +546,23 @@ class Ch592OtaCoordinator:
             # Give the device a moment to switch from advertising to connectable.
             await asyncio.sleep(2)
             threshold = self._threshold_pending_value()
+            if threshold is None:
+                # A foreground setter may have completed (or the user may have
+                # cancelled) while this task was waiting. Do not strand a
+                # firmware upgrade merely because pending is now empty.
+                self._maybe_auto_install()
+                return
             if threshold is not None:
                 try:
                     await self._async_write_threshold(threshold)
                 except Exception:  # noqa: BLE001 - recorded in threshold_result
+                    self.data["auto_note"] = "阈值写入失败，本次 OTA 窗口不继续自动升级"
                     _LOGGER.exception("自动写入阈值失败")
+                    self._notify()
+                else:
+                    # Threshold writes do not reboot, so a pending firmware
+                    # upgrade can continue in this same OTA window.
+                    self._maybe_auto_install()
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - already recorded in the results
@@ -515,7 +594,7 @@ class Ch592OtaCoordinator:
         if not self.auto_install:
             return skip("选项 auto_install_on_ota_mode 已关闭")
         if self._threshold_pending_value() is not None:
-            return skip("有待写入的阈值，本次按 B 优先写阈值；升级请稍后重新长按 B")
+            return skip("有待写阈值，写入成功后再检查自动升级")
         if not self._seen_bthome:
             return skip("本次启动还没看到普通广播，可能是上次遗留的 OTA 模式，未自动升级")
         if self._task is not None and not self._task.done():
@@ -616,6 +695,11 @@ class Ch592OtaCoordinator:
         meta: dict[str, object] | None = None,
     ) -> dict[str, object]:
         self._assert_operation_available()
+        pending_threshold = self._threshold_pending_value()
+        if pending_threshold is not None and self.data.get("ota_mode"):
+            # A threshold write does not reboot. Finish it before END of any
+            # manual or automatic firmware upgrade in the same OTA window.
+            await self._async_write_threshold(pending_threshold)
         self._start_counter += 1
         reservation = self._start_counter
         generation = self._operation_generation

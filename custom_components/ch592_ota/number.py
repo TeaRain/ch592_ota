@@ -91,7 +91,7 @@ class Ch592ThresholdNumber(NumberEntity):
     """Set the TCRT5000 threshold, arming a write until OTA mode if needed."""
 
     _attr_has_entity_name = True
-    _attr_name = "采样阈值（待写入，按B生效）"
+    _attr_name = "采样阈值（等待OTA写入）"
     _attr_icon = "mdi:tune-variant"
     _attr_native_min_value = THRESHOLD_MIN
     _attr_native_max_value = THRESHOLD_MAX
@@ -134,5 +134,5 @@ class Ch592ThresholdNumber(NumberEntity):
             "device_threshold": self.coordinator.data.get("threshold"),
             "pending_threshold": self.coordinator.data.get("threshold_pending"),
             "last_result": self.coordinator.data.get("threshold_result"),
-            "操作说明": "普通模式输入后登记待写入，再长按B键3秒；OTA模式输入后直接写入",
+            "操作说明": "输入后等待下次OTA窗口：按B立即触发或最长等待3天；已在OTA时直接写入",
         }

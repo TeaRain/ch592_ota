@@ -224,6 +224,7 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
             data={"address": "AA:BB:CC:DD:EE:FF"}, options={}, entry_id="test-entry"
         )
         self.coordinator = Ch592OtaCoordinator(self.hass, self.entry)
+        FakeStore.saved.clear()
         _entity_registry.hidden.clear()
         _entity_registry.legacy.clear()
         _entity_registry.removed.clear()
@@ -460,7 +461,7 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
             (button.Ch592OtaAbortButton, "取消升级"),
             (button.Ch592CancelPendingButton, "取消待写入"),
             (number.Ch592GasTargetNumber, "机械表实际读数（输入后自动校准）"),
-            (number.Ch592ThresholdNumber, "采样阈值（待写入，按B生效）"),
+            (number.Ch592ThresholdNumber, "采样阈值（等待OTA写入）"),
         ]
         for entity_class, label in expected:
             with self.subTest(entity=entity_class.__name__):
@@ -537,6 +538,279 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.coordinator.data["threshold_target"], 160)
         self.assertEqual(self.coordinator.data["threshold_pending"], 160)
+
+    async def test_threshold_pending_survives_restart_and_cancel(self):
+        self.coordinator.data["ota_mode"] = False
+        await self.coordinator.async_set_threshold(140)
+        await self.coordinator.async_stop()
+
+        restored = Ch592OtaCoordinator(self.hass, self.entry)
+        await restored.async_start()
+        self.assertEqual(restored.data["threshold_pending"], 140)
+        self.assertEqual(restored.data["threshold_target"], 140)
+        await restored.async_cancel_threshold()
+        await restored.async_stop()
+
+        cleared = Ch592OtaCoordinator(self.hass, self.entry)
+        await cleared.async_start()
+        self.assertIsNone(cleared.data["threshold_pending"])
+        await cleared.async_stop()
+
+    async def test_threshold_pending_does_not_expire_before_timed_ota(self):
+        self.coordinator.data["ota_mode"] = False
+        await self.coordinator.async_set_threshold(145)
+        future = asyncio.get_running_loop().time() + 4 * 86400
+        fake_loop = types.SimpleNamespace(time=lambda: future)
+        with patch.object(
+            coordinator_module.asyncio, "get_running_loop", return_value=fake_loop
+        ):
+            self.assertEqual(self.coordinator._threshold_pending_value(), 145)
+
+    async def test_pending_threshold_success_continues_to_auto_upgrade(self):
+        self.coordinator.data["ota_mode"] = False
+        await self.coordinator.async_set_threshold(150)
+        self.coordinator.data["ota_mode"] = True
+        events = []
+
+        async def write_threshold(value):
+            events.append(("write", value))
+            self.coordinator.data.update(
+                threshold_pending=None,
+                threshold=value,
+                threshold_result=f"已写入阈值 {value}",
+            )
+
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(_seconds):
+            await original_sleep(0)
+
+        with (
+            patch.object(
+                self.coordinator, "_async_write_threshold", side_effect=write_threshold
+            ),
+            patch.object(
+                self.coordinator,
+                "_maybe_auto_install",
+                side_effect=lambda: events.append(("upgrade", None)),
+            ),
+            patch.object(coordinator_module.asyncio, "sleep", fast_sleep),
+        ):
+            await self.coordinator._async_auto_write_pending()
+
+        self.assertEqual(events, [("write", 150), ("upgrade", None)])
+
+    async def test_timed_window_threshold_then_real_auto_upgrade_flow(self):
+        self.coordinator.data["ota_mode"] = False
+        await self.coordinator.async_set_threshold(152)
+        self.coordinator.data.update(ota_mode=True, firmware_version="1.4.9")
+        self.coordinator._seen_bthome = True
+        self.coordinator.cloud = types.SimpleNamespace(data={"version": "1.5.0"})
+        events = []
+
+        async def write_threshold(value):
+            events.append("threshold")
+            self.coordinator.data.update(
+                threshold_pending=None,
+                threshold=value,
+                threshold_result=f"已写入阈值 {value}",
+            )
+
+        async def run_ota(image, target):
+            events.append("ota")
+            self.coordinator.data.update(status="success", phase="done", progress=100)
+            self.coordinator._task = None
+
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(_seconds):
+            await original_sleep(0)
+
+        with (
+            patch.object(
+                self.coordinator, "_async_write_threshold", side_effect=write_threshold
+            ),
+            patch.object(self.coordinator, "_async_run_ota", side_effect=run_ota),
+            patch.object(coordinator_module.asyncio, "sleep", fast_sleep),
+        ):
+            await self.coordinator._async_auto_write_pending()
+            auto_task = self.coordinator._auto_task
+            self.assertIsNotNone(auto_task)
+            await auto_task
+
+        self.assertEqual(events, ["threshold", "ota"])
+        self.assertEqual(self.coordinator.data["status"], "success")
+
+    async def test_failed_pending_threshold_blocks_upgrade_and_stays_pending(self):
+        self.coordinator.data["ota_mode"] = False
+        await self.coordinator.async_set_threshold(155)
+        self.coordinator.data["ota_mode"] = True
+
+        async def fail_write(*args, **kwargs):
+            raise HomeAssistantError("模拟写入失败")
+
+        original_sleep = asyncio.sleep
+
+        async def fast_sleep(_seconds):
+            await original_sleep(0)
+
+        with (
+            patch.object(coordinator_module, "async_set_threshold", fail_write),
+            patch.object(self.coordinator, "_maybe_auto_install") as auto_install,
+            patch.object(coordinator_module.asyncio, "sleep", fast_sleep),
+        ):
+            with self.assertLogs(coordinator_module._LOGGER, level="ERROR"):
+                await self.coordinator._async_auto_write_pending()
+
+        auto_install.assert_not_called()
+        self.assertEqual(self.coordinator.data["threshold_pending"], 155)
+        self.assertIn("写入失败", self.coordinator.data["threshold_result"])
+
+    async def test_set_threshold_save_race_still_continues_auto_upgrade(self):
+        self.coordinator.data["ota_mode"] = True
+        save_started = asyncio.Event()
+        allow_save = asyncio.Event()
+        auto_sleep_started = asyncio.Event()
+        allow_auto = asyncio.Event()
+
+        async def gated_save(_state):
+            save_started.set()
+            await allow_save.wait()
+
+        async def gated_sleep(_seconds):
+            auto_sleep_started.set()
+            await allow_auto.wait()
+
+        async def write_threshold(value):
+            self.coordinator.data.update(
+                threshold_pending=None,
+                threshold=value,
+                threshold_result=f"已写入阈值 {value}",
+            )
+
+        with (
+            patch.object(self.coordinator._threshold_store, "async_save", gated_save),
+            patch.object(
+                self.coordinator, "_async_write_threshold", side_effect=write_threshold
+            ),
+            patch.object(self.coordinator, "_maybe_auto_install") as auto_install,
+            patch.object(coordinator_module.asyncio, "sleep", gated_sleep),
+        ):
+            setter = asyncio.create_task(self.coordinator.async_set_threshold(170))
+            await save_started.wait()
+            self.coordinator._maybe_apply_pending()
+            auto_task = self.coordinator._gas_task
+            self.assertIsNotNone(auto_task)
+            await auto_sleep_started.wait()
+            allow_save.set()
+            await setter
+            allow_auto.set()
+            await auto_task
+
+        auto_install.assert_called_once_with()
+
+    async def test_cancel_during_threshold_save_prevents_stale_write(self):
+        self.coordinator.data["ota_mode"] = True
+        save_started = asyncio.Event()
+        allow_save = asyncio.Event()
+        save_calls = 0
+        writes = []
+        completed_states = []
+
+        async def gated_save(state):
+            nonlocal save_calls
+            save_calls += 1
+            if save_calls == 1:
+                save_started.set()
+                await allow_save.wait()
+            completed_states.append(state)
+
+        async def write_threshold(value):
+            writes.append(value)
+            self.coordinator.data["threshold_pending"] = None
+
+        with (
+            patch.object(self.coordinator._threshold_store, "async_save", gated_save),
+            patch.object(
+                self.coordinator, "_async_write_threshold", side_effect=write_threshold
+            ),
+        ):
+            setter = asyncio.create_task(self.coordinator.async_set_threshold(172))
+            await save_started.wait()
+            await self.coordinator.async_cancel_threshold()
+            allow_save.set()
+            with self.assertRaises(HomeAssistantError):
+                await setter
+
+        self.assertEqual(writes, [])
+        self.assertIsNone(self.coordinator.data["threshold_pending"])
+        self.assertIsNone(completed_states[-1]["pending"])
+
+    async def test_newer_threshold_replaces_older_waiting_save(self):
+        self.coordinator.data["ota_mode"] = True
+        save_started = asyncio.Event()
+        allow_save = asyncio.Event()
+        save_calls = 0
+        writes = []
+        completed_states = []
+
+        async def gated_save(state):
+            nonlocal save_calls
+            save_calls += 1
+            if save_calls == 1:
+                save_started.set()
+                await allow_save.wait()
+            completed_states.append(state)
+
+        async def write_threshold(value):
+            writes.append(value)
+            self.coordinator.data.update(
+                threshold_pending=None,
+                threshold=value,
+                threshold_result=f"已写入阈值 {value}",
+            )
+
+        with (
+            patch.object(self.coordinator._threshold_store, "async_save", gated_save),
+            patch.object(
+                self.coordinator, "_async_write_threshold", side_effect=write_threshold
+            ),
+        ):
+            older = asyncio.create_task(self.coordinator.async_set_threshold(175))
+            await save_started.wait()
+            await self.coordinator.async_set_threshold(180)
+            allow_save.set()
+            with self.assertRaises(HomeAssistantError):
+                await older
+
+        self.assertEqual(writes, [180])
+        self.assertEqual(self.coordinator.data["threshold"], 180)
+        self.assertIsNone(completed_states[-1]["pending"])
+        self.assertEqual(completed_states[-1]["target"], 180)
+
+    async def test_manual_ota_writes_pending_threshold_first(self):
+        self.coordinator.data.update(ota_mode=True, threshold_pending=165)
+        events = []
+
+        async def write_threshold(value):
+            events.append("threshold")
+            self.coordinator.data["threshold_pending"] = None
+
+        async def run_ota(image, target):
+            events.append("ota")
+
+        with (
+            patch.object(
+                self.coordinator, "_async_write_threshold", side_effect=write_threshold
+            ),
+            patch.object(self.coordinator, "_async_run_ota", side_effect=run_ota),
+        ):
+            await self.coordinator.async_start_ota(
+                image=b"\x6f\x00\x00\x00", version="1.5.0"
+            )
+            await self.coordinator.current_task
+
+        self.assertEqual(events, ["threshold", "ota"])
 
     async def test_legacy_set_gas_calibrates_instead_of_arming_ota(self):
         self.coordinator.data.update(gas_value=1000, ota_mode=False)

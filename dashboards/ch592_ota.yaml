@@ -63,7 +63,7 @@ cards:
         name: 机械表实际读数（输入后自动校准）
 
   # 采样阈值：默认 100，可设 20~2000。调低更灵敏（可能多计），调高更保守（可能漏计）。
-  # 普通模式提交数值只登记待写入，仍须长按 B 3 秒；OTA 模式提交后才直接写入。
+  # 普通模式提交后持久等待下次 OTA：按 B 立即触发或最长等 3 天；OTA 中直接写入。
   - type: entities
     title: 采样阈值校正
     icon: mdi:tune-variant
@@ -71,6 +71,6 @@ cards:
       - entity: sensor.sheng_huo_yang_tai_ch592_current_threshold
         name: 当前采样阈值（P/N按键调整）
       - entity: number.sheng_huo_yang_tai_ch592_pulse_threshold
-        name: 采样阈值（待写入，按B生效）
+        name: 采样阈值（等待OTA写入）
       - entity: button.sheng_huo_yang_tai_ch592_cancel_pending_writes
         name: 取消待写入

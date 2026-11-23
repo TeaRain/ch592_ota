@@ -78,9 +78,10 @@ set_threshold:
   name: Set pulse threshold
   description: >-
     Write the TCRT5000 pulse threshold into the device's DataFlash over the OTA
-    channel (firmware 1.4.1+). If the device is not in OTA mode the value is
-    armed for 15 minutes: hold button B for 3 seconds and the integration
-    writes it instead of upgrading.
+    channel (firmware 1.4.1+). Outside OTA mode the value is persisted until a
+    manual button-B window or the automatic three-day OTA window writes it. A
+    successful threshold write is followed by any pending firmware upgrade in
+    the same OTA window; a failed write remains pending and blocks that upgrade.
   fields:
     address:
       name: Bluetooth address

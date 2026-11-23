@@ -12,11 +12,11 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 
 ## 当前版本与历史实测
 
-> 1.5.0 / 0.7.5 已完成构建和自动化测试；P/N 渐进调整、实时回显与快速 CRC 待本次实机复测。
+> 1.5.0 / 0.7.7 已完成构建和自动化测试；P/N 渐进调整、实时回显与快速 CRC 待实机复测。
 
 | 项目 | 值 |
 |------|-----|
-| 集成版本 | **0.7.5** |
+| 集成版本 | **0.7.7** |
 | 固件版本 | **1.5.0** |
 | 一次升级耗时 | 协议 8 恢复单次 CRC32；旧协议使用逐块 VERIFY，耗时更长 |
 | 供电实测 | CR2032 新电池，OTA 负载下 **3.04 V**，全程无下探 |
@@ -208,11 +208,14 @@ data:
 1. `number.*_pulse_threshold` 填目标值（20~2000，默认 100），按回车或点击输入框外提交；
 2. 不再需要单独的 HA 写入按钮：
    - 设备已在 OTA 模式 → 立即写入（写 DataFlash，**不复位**）；
-   - 不在 OTA 模式 → 只记为「待写入」，**仍须长按 B 3 秒**进入 OTA 后才会写入；
-     本次按 B 优先写阈值、跳过自动升级，待写入 15 分钟内有效；
+   - 不在 OTA 模式 → 持久保存为「等待 OTA 写入」，可按 B 立即触发，也可等待
+     每 3 天的定时 OTA 窗口；HA 重启不会清除待写值；
+   - 阈值与固件升级同时存在时，**先写阈值，成功后继续同一窗口的固件升级**；
+     写入失败保留待写值和错误，本次窗口不继续升级；
 3. 取消：`button.*_cancel_pending_writes` 或 `ch592_ota.cancel_threshold`。
 
-0.7.6 起删除旧 `button.*_write_pulse_threshold`；`ch592_ota.set_threshold` 服务保留。
+0.7.6 起删除旧 `button.*_write_pulse_threshold`；0.7.7 起待写值不再 15 分钟过期。
+`ch592_ota.set_threshold` 服务保留。
 
 ```yaml
 action: ch592_ota.set_threshold
@@ -251,7 +254,7 @@ data:
 | `button.<device>_check_for_updates` | 立即检查固件清单 |
 | `number.<device>_gas_target` | 机械表实际读数（提交即校准，只写 HA offset，无需按 B） |
 | `sensor.<device>_current_threshold` | 当前采样阈值（P/N按键调整），固件 ≥1.4.9 实时广播 |
-| `number.<device>_pulse_threshold` | 采样阈值（提交后写入/登记待写入；普通模式仍须按 B） |
+| `number.<device>_pulse_threshold` | 采样阈值（提交后写入或持久等待下次 OTA；按 B 或最长等 3 天） |
 | `button.<device>_cancel_pending_writes` | 取消待写入阈值 |
 
 `sensor.<device>_ota_status` 的属性是排查问题的主要入口：
@@ -352,6 +355,7 @@ python tools/publish_firmware.py --repo . --notes "改了什么" --push
 | 0.7.4 | P/N 当前阈值约 300 ms 回显；设备页实体统一中文，ID 与接口不变 |
 | 0.7.5 | 协议 8 不再被冗余能力位挡在慢速 VERIFY；阈值只读实体修复为 diagnostic |
 | 0.7.6 | 检查更新移回控制区；燃气/阈值旧写入按钮删除；阈值输入直接写入或登记待写入 |
+| 0.7.7 | 待写阈值跨重启持久化，可等 3 天定时 OTA；阈值成功后同窗口继续固件升级 |
 
 固件侧：1.2.9 引入按页拆分的 PROGRAM；1.3.0 引入 `0x85` CRC32 校验与 OTA 模式
 电压上报；1.3.1 为电池实测版本；1.4.0 增加 `0x86` 燃气值写入；1.4.1 增加
