@@ -23,7 +23,6 @@ from .const import CONF_FIRMWARE
 from .coordinator import Ch592OtaCoordinator
 from .entity import build_device_info
 from .firmware import (
-    async_download_firmware,
     is_newer,
     manifest_version,
 )
@@ -109,7 +108,12 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
             parts.append(f"{int(size) // 1024} KiB")
         if crc:
             parts.append(f"CRC {crc}")
-        parts.append("升级前请长按 B 键 3 秒进入 OTA 模式")
+        if self.coordinator.data.get("ota_mode"):
+            parts.append("设备已进入 OTA，可直接安装")
+        elif self.coordinator.remote_ota_supported(self.installed_version):
+            parts.append("点击安装后自动等待普通广播窗口，无需按 B")
+        else:
+            parts.append("首次升级请长按 B 键 3 秒或等待三天定时窗口")
         return " · ".join(parts)
 
     @property
@@ -131,16 +135,13 @@ class Ch592FirmwareUpdateEntity(UpdateEntity):
         manifest = self._cloud_manifest()
         cloud_version = manifest_version(manifest)
         if manifest and is_newer(cloud_version, self.installed_version):
-            image = await async_download_firmware(self.hass, manifest)
-            await self.coordinator.async_start_ota(
-                version=version or cloud_version,
-                image=image,
-                meta=manifest,
+            task = self.coordinator.async_install_cloud(
+                manifest, version or cloud_version
             )
         else:
             await self.coordinator.async_start_ota()
+            task = self.coordinator.current_task
 
-        task = self.coordinator.current_task
         if task is not None:
             await task
         if self.coordinator.data.get("status") != "success":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import zlib
@@ -25,6 +26,7 @@ from .ble_ota import (
     Ch592OtaClient,
     OtaError,
     OtaMtuError,
+    async_request_ota,
     async_set_threshold,
 )
 from .bthome import has_bthome_data, parse_bthome_fields
@@ -38,6 +40,9 @@ from .const import (
     IMAGE_SIZE,
     OTA_SERVICE_UUID,
     REBOOT_TIMEOUT,
+    REMOTE_OTA_MIN_VERSION,
+    REMOTE_OTA_SWITCH_TIMEOUT,
+    REMOTE_OTA_WAKE_TIMEOUT,
     THRESHOLD_MAX,
     THRESHOLD_MIN,
 )
@@ -81,6 +86,7 @@ class Ch592OtaCoordinator:
             "ads": 0,
             "last_seen": None,
             "ota_mode": False,
+            "ota_ads": 0,
             "status": "idle",
             "phase": "idle",
             "progress": 0,
@@ -119,6 +125,9 @@ class Ch592OtaCoordinator:
         self._operation_generation = 0
         self._reboot_start_seq: int | None = None
         self._stopped = False
+        self._bt_event = asyncio.Event()
+        self.data["wake_attempts"] = 0
+        self.data["wake_error"] = None
         # Pulse threshold (firmware >= 1.4.1): device value, draft, armed intent.
         self.data["threshold"] = None
         self.data["threshold_target"] = None
@@ -199,6 +208,7 @@ class Ch592OtaCoordinator:
         # report a BTHome payload for the same address, and the cached device
         # name is "GasMeter OTA" in both modes, so the name proves nothing.
         if self._is_ota_advertisement(service_info):
+            self.data["ota_ads"] = int(self.data.get("ota_ads", 0)) + 1
             if not self.data["ota_mode"]:
                 _LOGGER.info(
                     "检测到 OTA 广播 (uuids=%s data=%s)",
@@ -239,6 +249,7 @@ class Ch592OtaCoordinator:
         if now - self._last_diag_notify >= 5:
             self._last_diag_notify = now
             self._notify()
+        self._bt_event.set()
 
     @staticmethod
     def _raw_16bit_uuids(raw: bytes | None) -> set[int] | None:
@@ -288,6 +299,32 @@ class Ch592OtaCoordinator:
             for u in service_info.service_data
         )
         return has_ota_uuid and not has_bthome_data(service_info)
+
+    @staticmethod
+    def remote_ota_supported(version: object) -> bool:
+        """Conservatively gate normal-mode wake to known firmware versions."""
+        if version is None:
+            return False
+        try:
+            parts = tuple(
+                int(part) for part in str(version).strip().lstrip("vV").split(".")
+            )
+        except (TypeError, ValueError):
+            return False
+        return len(parts) == 3 and parts >= REMOTE_OTA_MIN_VERSION
+
+    @staticmethod
+    def _validate_remote_metadata(image: bytes, meta: dict[str, object]) -> None:
+        for field in ("size", "crc32", "sha256"):
+            if meta.get(field) is None:
+                raise HomeAssistantError(f"免按键升级要求固件清单提供 {field}")
+        if len(image) != int(meta["size"]):
+            raise HomeAssistantError("免按键升级固件大小与清单不一致")
+        actual_crc = f"0x{zlib.crc32(image) & 0xFFFFFFFF:08X}"
+        if str(meta["crc32"]).upper() != actual_crc.upper():
+            raise HomeAssistantError("免按键升级固件 CRC32 与清单不一致")
+        if str(meta["sha256"]).lower() != hashlib.sha256(image).hexdigest():
+            raise HomeAssistantError("免按键升级固件 SHA-256 与清单不一致")
 
     def _assert_operation_available(self) -> None:
         """Reject overlapping device operations before any await creates a race."""
@@ -506,14 +543,18 @@ class Ch592OtaCoordinator:
         }
 
     @_track_config_operation
-    async def _async_write_threshold(self, value: int) -> None:
+    async def _async_write_threshold(
+        self, value: int, fresh_services: bool = False
+    ) -> None:
         self.data["threshold_result"] = "writing"
         self._notify()
         try:
             async with self._ble_lock:
                 if self._stopped:
                     raise HomeAssistantError("设备配置已卸载")
-                await async_set_threshold(self.hass, self.address, value)
+                await async_set_threshold(
+                    self.hass, self.address, value, fresh_services=fresh_services
+                )
         except Exception as err:  # noqa: BLE001 - surface every failure
             self.data["threshold_result"] = f"写入失败: {err}"
             self._notify()
@@ -673,6 +714,41 @@ class Ch592OtaCoordinator:
         """The running OTA task, so entities can wait for it to finish."""
         return self._task
 
+    def async_install_cloud(
+        self, manifest: dict[str, object], version: str | None
+    ) -> asyncio.Task:
+        """Register the download itself as an operation so abort/dedupe cover it."""
+        self._assert_operation_available()
+        task = self.hass.async_create_task(
+            self._async_cloud_install(manifest, version),
+            name=f"ch592_ota download {self.address}",
+        )
+        self._task = task
+        return task
+
+    async def _async_cloud_install(
+        self, manifest: dict[str, object], version: str | None
+    ) -> None:
+        current = asyncio.current_task()
+        try:
+            image = await async_download_firmware(self.hass, manifest)
+            # async_start_ota ignores the current registered outer task. It
+            # replaces it with the real OTA runner only after all validation.
+            await self.async_start_ota(
+                version=version, image=image, meta=manifest
+            )
+            inner = self._task
+            if inner is not None and inner is not current:
+                await inner
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 - surface download/start errors
+            self.data.update(status="failed", phase="failed", error=str(err))
+            self._notify()
+        finally:
+            if self._task is current:
+                self._task = None
+
     # --------------------------------------------------------------- firmware
 
     def resolve_firmware_path(self, value: str | None = None) -> Path:
@@ -695,6 +771,13 @@ class Ch592OtaCoordinator:
         meta: dict[str, object] | None = None,
     ) -> dict[str, object]:
         self._assert_operation_available()
+        wake_required = not bool(self.data.get("ota_mode"))
+        if wake_required and not self.remote_ota_supported(
+            self.data.get("firmware_version")
+        ):
+            raise HomeAssistantError(
+                "当前固件不支持免按键唤醒，请先按 B 或等待三天定时窗口升级"
+            )
         pending_threshold = self._threshold_pending_value()
         if pending_threshold is not None and self.data.get("ota_mode"):
             # A threshold write does not reboot. Finish it before END of any
@@ -740,6 +823,9 @@ class Ch592OtaCoordinator:
                     f"固件 CRC32 不匹配: 元数据 {expected_crc}, 实际 {actual_crc}"
                 )
 
+            if wake_required:
+                self._validate_remote_metadata(image, meta)
+
             if generation != self._operation_generation or self._stopped:
                 raise asyncio.CancelledError
 
@@ -756,8 +842,13 @@ class Ch592OtaCoordinator:
             )
             self._notify()
 
+            runner = (
+                self._async_run_ota(image, target, wake_required=True)
+                if wake_required
+                else self._async_run_ota(image, target)
+            )
             self._task = self.hass.async_create_task(
-                self._async_run_ota(image, target), name=f"ch592_ota {self.address}"
+                runner, name=f"ch592_ota {self.address}"
             )
             return {"status": "started", "version": target, "size": len(image)}
 
@@ -860,9 +951,100 @@ class Ch592OtaCoordinator:
             for key in ("断开", "connect", "timeout", "timed out", "超时")
         )
 
-    async def _async_run_ota(self, image: bytes, target: str | None) -> None:
+    async def _async_wait_bt(self, predicate: Callable[[], bool], timeout: float) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        while not predicate():
+            self._bt_event.clear()
+            if predicate():
+                return True
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return False
+            try:
+                await asyncio.wait_for(self._bt_event.wait(), remaining)
+            except TimeoutError:
+                return False
+        return True
+
+    async def _async_wait_for_ota_switch(
+        self, start_seq: int, timeout: float = REMOTE_OTA_SWITCH_TIMEOUT
+    ) -> bool:
+        return await self._async_wait_bt(
+            lambda: bool(self.data.get("ota_mode"))
+            and int(self.data.get("ota_ads", 0)) > start_seq,
+            timeout,
+        )
+
+    async def _async_remote_wake(self) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + REMOTE_OTA_WAKE_TIMEOUT
+        baseline_ads = int(self.data.get("ads", 0))
+        self.data.update(wake_attempts=0, wake_error=None)
+
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            self.data.update(
+                status="starting", phase="waiting_window", progress=0
+            )
+            self._notify()
+            seen = await self._async_wait_bt(
+                lambda: int(self.data.get("ads", 0)) > baseline_ads
+                or bool(self.data.get("ota_mode")),
+                remaining,
+            )
+            if not seen:
+                break
+            if self.data.get("ota_mode"):
+                return
+            baseline_ads = int(self.data.get("ads", 0))
+            self.data["wake_attempts"] = int(self.data.get("wake_attempts", 0)) + 1
+            ota_baseline = int(self.data.get("ota_ads", 0))
+            self.data.update(status="starting", phase="connecting_control")
+            self._notify()
+            try:
+                await async_request_ota(self.hass, self.address)
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:  # noqa: BLE001 - retry at the next window
+                self.data["wake_error"] = str(err)
+                self._notify()
+                if bool(self.data.get("ota_mode")) and int(
+                    self.data.get("ota_ads", 0)
+                ) > ota_baseline:
+                    return
+                continue
+
+            self.data.update(status="starting", phase="requesting_ota")
+            self._notify()
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            self.data.update(status="starting", phase="waiting_ota_ad")
+            self._notify()
+            if await self._async_wait_for_ota_switch(
+                ota_baseline, min(REMOTE_OTA_SWITCH_TIMEOUT, remaining)
+            ):
+                return
+            self.data["wake_error"] = "已发送唤醒请求，但未收到新的 OTA 广播"
+            self._notify()
+
+        raise OtaError("等待普通广播唤醒窗口超时")
+
+    async def _async_run_ota(
+        self, image: bytes, target: str | None, wake_required: bool = False
+    ) -> None:
         try:
             self._reboot_start_seq = None
+            if wake_required:
+                await self._async_remote_wake()
+                pending_threshold = self._threshold_pending_value()
+                if pending_threshold is not None:
+                    await self._async_write_threshold(
+                        pending_threshold, fresh_services=True
+                    )
             # Chunks must be multiples of 16 so the WCH addr16 field stays aligned.
             requested = self._requested_chunk
             chunks: list[int | None] = [requested] if requested else [None]
@@ -884,6 +1066,7 @@ class Ch592OtaCoordinator:
                         image,
                         self._on_progress,
                         self._on_ota_info,
+                        fresh_services=wake_required,
                     )
                     self._client = client
                     try:

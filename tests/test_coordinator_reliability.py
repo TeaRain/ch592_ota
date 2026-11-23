@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import sys
 import tempfile
 import types
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -181,11 +183,16 @@ class Ch592OtaClient:
         return None
 
 
+async def _unexpected_remote_wake(*args, **kwargs):
+    raise AssertionError("remote wake was not expected in this test")
+
+
 _ble_module = _module(
     f"{PACKAGE}.ble_ota",
     Ch592OtaClient=Ch592OtaClient,
     OtaError=OtaError,
     OtaMtuError=OtaMtuError,
+    async_request_ota=_unexpected_remote_wake,
     async_set_gas=_tracked_config_write,
     async_set_threshold=_tracked_config_write,
 )
@@ -305,6 +312,7 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(wait, return_exceptions=True)
 
     async def test_path_ota_start_is_reserved_before_file_read(self):
+        self.coordinator.data["ota_mode"] = True
         with tempfile.TemporaryDirectory() as directory:
             firmware = Path(directory) / "firmware.bin"
             firmware.write_bytes(b"\x6f\x00\x00\x00")
@@ -334,6 +342,7 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
                 await asyncio.gather(first, return_exceptions=True)
 
     async def test_abort_during_file_read_prevents_delayed_start(self):
+        self.coordinator.data["ota_mode"] = True
         with tempfile.TemporaryDirectory() as directory:
             firmware = Path(directory) / "firmware.bin"
             firmware.write_bytes(b"\x6f\x00\x00\x00")
@@ -787,6 +796,197 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.coordinator.data["threshold"], 180)
         self.assertIsNone(completed_states[-1]["pending"])
         self.assertEqual(completed_states[-1]["target"], 180)
+
+    @staticmethod
+    def _remote_meta(image):
+        return {
+            "size": len(image),
+            "crc32": f"0x{zlib.crc32(image) & 0xFFFFFFFF:08X}",
+            "sha256": hashlib.sha256(image).hexdigest(),
+        }
+
+    def _emit_normal_advertisement(self):
+        self.coordinator.data["ads"] = int(self.coordinator.data["ads"]) + 1
+        self.coordinator.data["ota_mode"] = False
+        self.coordinator._bt_event.set()
+
+    async def test_cloud_download_is_cancellable_and_serialized(self):
+        image = b"\x6f\x00\x00\x00"
+        meta = self._remote_meta(image)
+        meta.update(version="1.6.1", download_url="https://example.invalid/fw")
+        started = asyncio.Event()
+        allow_download = asyncio.Event()
+
+        async def blocked_download(*args):
+            started.set()
+            await allow_download.wait()
+            return image
+
+        self.coordinator.data.update(firmware_version="1.6.0", ota_mode=False)
+        with patch.object(
+            coordinator_module, "async_download_firmware", blocked_download
+        ):
+            task = self.coordinator.async_install_cloud(meta, "1.6.1")
+            await asyncio.wait_for(started.wait(), timeout=1)
+            with self.assertRaises(HomeAssistantError):
+                self.coordinator.async_install_cloud(meta, "1.6.1")
+            await self.coordinator.async_abort()
+            allow_download.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+        self.assertIsNone(self.coordinator._task)
+        self.assertEqual(self.coordinator.data["status"], "aborted")
+
+    async def test_legacy_normal_mode_requires_button_without_ble(self):
+        image = b"\x6f\x00\x00\x00"
+        request = unittest.mock.AsyncMock()
+        with patch.object(coordinator_module, "async_request_ota", request, create=True):
+            for version in (None, "1.5.0"):
+                with self.subTest(version=version):
+                    self.coordinator.data.update(
+                        firmware_version=version, ota_mode=False
+                    )
+                    with self.assertRaises(HomeAssistantError):
+                        await self.coordinator.async_start_ota(
+                            image=image,
+                            version="1.6.0",
+                            meta=self._remote_meta(image),
+                        )
+        request.assert_not_called()
+
+    async def test_remote_wake_requires_complete_verified_metadata(self):
+        image = b"\x6f\x00\x00\x00"
+        complete = self._remote_meta(image)
+
+        async def run_ota(*args, **kwargs):
+            return None
+
+        with patch.object(self.coordinator, "_async_run_ota", side_effect=run_ota):
+            for field in ("size", "crc32", "sha256"):
+                with self.subTest(missing=field):
+                    self.coordinator.data.update(
+                        firmware_version="1.6.0", ota_mode=False
+                    )
+                    meta = dict(complete)
+                    meta.pop(field)
+                    with self.assertRaises(HomeAssistantError):
+                        await self.coordinator.async_start_ota(
+                            image=image, version="1.6.1", meta=meta
+                        )
+
+    async def test_remote_wake_waits_for_new_window_after_failed_connect(self):
+        self.coordinator.data.update(
+            firmware_version="1.6.0", ota_mode=False, ads=0, ota_ads=0
+        )
+        first_failed = asyncio.Event()
+        calls = 0
+
+        async def request(*args):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                first_failed.set()
+                raise OtaError("connect timeout")
+            self.coordinator.data["ota_ads"] += 1
+            self.coordinator.data["ota_mode"] = True
+            self.coordinator._bt_event.set()
+
+        with patch.object(coordinator_module, "async_request_ota", request, create=True):
+            task = asyncio.create_task(self.coordinator._async_remote_wake())
+            await asyncio.sleep(0)
+            self._emit_normal_advertisement()
+            await asyncio.wait_for(first_failed.wait(), timeout=1)
+            self._emit_normal_advertisement()
+            await asyncio.wait_for(task, timeout=1)
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(self.coordinator.data["wake_attempts"], 2)
+
+    async def test_cancel_while_waiting_window_prevents_stale_wake(self):
+        request = unittest.mock.AsyncMock()
+        with patch.object(coordinator_module, "async_request_ota", request, create=True):
+            task = asyncio.create_task(self.coordinator._async_remote_wake())
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._emit_normal_advertisement()
+            await asyncio.sleep(0)
+        request.assert_not_called()
+
+    async def test_ota_mode_without_new_raw_advertisement_is_stale(self):
+        self.coordinator.data.update(ota_mode=True, ota_ads=4)
+        self.assertFalse(
+            await self.coordinator._async_wait_for_ota_switch(4, timeout=0)
+        )
+        self.coordinator.data["ota_ads"] = 5
+        self.assertTrue(
+            await self.coordinator._async_wait_for_ota_switch(4, timeout=0)
+        )
+
+    async def test_remote_wake_writes_threshold_before_upload_with_fresh_gatt(self):
+        self.coordinator.data.update(ota_mode=False, threshold_pending=165)
+        events = []
+        fresh = []
+        threshold_fresh = []
+
+        async def wake():
+            events.append("wake")
+            self.coordinator.data["ota_mode"] = True
+
+        async def write_threshold(value, fresh_services=False):
+            events.append("threshold")
+            threshold_fresh.append(fresh_services)
+            self.coordinator.data["threshold_pending"] = None
+
+        class FakeOta:
+            def __init__(self, *args, **kwargs):
+                fresh.append(kwargs.get("fresh_services", False))
+
+            async def async_run(self, chunk):
+                events.append("ota")
+                self_outer._on_progress(98, "rebooting", 0, 0)
+
+        self_outer = self.coordinator
+        with (
+            patch.object(self.coordinator, "_async_remote_wake", side_effect=wake),
+            patch.object(
+                self.coordinator, "_async_write_threshold", side_effect=write_threshold
+            ),
+            patch.object(coordinator_module, "Ch592OtaClient", FakeOta),
+            patch.object(
+                self.coordinator, "_async_wait_for_reboot", return_value=True
+            ),
+        ):
+            await self.coordinator._async_run_ota(
+                b"\x6f\x00\x00\x00", "1.6.1", wake_required=True
+            )
+
+        self.assertEqual(events, ["wake", "threshold", "ota"])
+        self.assertEqual(threshold_fresh, [True])
+        self.assertEqual(fresh, [True])
+
+    async def test_remote_threshold_failure_prevents_any_upload(self):
+        self.coordinator.data.update(ota_mode=False, threshold_pending=165)
+
+        async def wake():
+            self.coordinator.data["ota_mode"] = True
+
+        threshold = unittest.mock.AsyncMock(side_effect=HomeAssistantError("write failed"))
+        client = unittest.mock.Mock()
+        with (
+            patch.object(self.coordinator, "_async_remote_wake", side_effect=wake),
+            patch.object(self.coordinator, "_async_write_threshold", threshold),
+            patch.object(coordinator_module, "Ch592OtaClient", client),
+            self.assertLogs(coordinator_module._LOGGER, level="ERROR"),
+        ):
+            await self.coordinator._async_run_ota(
+                b"\x6f\x00\x00\x00", "1.6.1", wake_required=True
+            )
+
+        threshold.assert_awaited_once_with(165, fresh_services=True)
+        client.assert_not_called()
+        self.assertEqual(self.coordinator.data["threshold_pending"], 165)
+        self.assertEqual(self.coordinator.data["status"], "failed")
 
     async def test_manual_ota_writes_pending_threshold_first(self):
         self.coordinator.data.update(ota_mode=True, threshold_pending=165)

@@ -56,6 +56,12 @@ CMD_IAP_INFO = 0x84
 CMD_IAP_CRC32 = 0x85
 CMD_IAP_SET_GAS = 0x86
 CMD_IAP_SET_THRESHOLD = 0x87
+CMD_IAP_ENTER_OTA = 0x88
+REMOTE_OTA_FRAME = bytes((CMD_IAP_ENTER_OTA, 0x00, 0xA5, 0x5A, 0x4F, 0x54))
+REMOTE_OTA_MIN_VERSION = (1, 6, 0)
+REMOTE_OTA_WAKE_TIMEOUT = 240
+REMOTE_OTA_SWITCH_TIMEOUT = 20
+REMOTE_OTA_DISCONNECT_TIMEOUT = 10
 
 # Config-write protocol: payloads carry a fixed magic so a stray packet can
 # never rewrite the billing counter or the detector threshold.

@@ -52,6 +52,8 @@ from .const import (
     OTA_STATUS_OK,
     OTA_STATUS_UNKNOWN_CMD,
     PROGRAM_STATUS_WINDOW,
+    REMOTE_OTA_DISCONNECT_TIMEOUT,
+    REMOTE_OTA_FRAME,
     STATUS_TIMEOUT,
     THRESHOLD_MAX,
     THRESHOLD_MIN,
@@ -81,6 +83,17 @@ def _le32(data: bytes) -> int:
     return int.from_bytes(data, "little")
 
 
+def _find_ota_char(client: BleakClient):
+    services = client.services
+    if services is None:
+        raise OtaError("未能发现 GATT 服务")
+    for service in services:
+        for char in service.characteristics:
+            if char.uuid.lower() == OTA_CHAR_UUID:
+                return char
+    raise OtaError("设备上没有找到 OTA 特征值，请确认已进入 OTA 模式")
+
+
 class Ch592OtaClient:
     """Perform a WCH OTA upload over an existing BLE connection."""
 
@@ -91,6 +104,7 @@ class Ch592OtaClient:
         image: bytes,
         progress_cb: ProgressCallback,
         info_cb: Callable[[dict[str, object]], None] | None = None,
+        fresh_services: bool = False,
     ) -> None:
         if len(image) > IMAGE_SIZE - 16:
             raise OtaError("固件超过 APP 区可用大小")
@@ -116,6 +130,7 @@ class Ch592OtaClient:
         self.vdd_mv: int | None = None
         self.vdd_min: int | None = None
         self._features = 0
+        self._fresh_services = fresh_services
 
     # ------------------------------------------------------------------ public
 
@@ -133,8 +148,11 @@ class Ch592OtaClient:
             )
 
         try:
+            client_class = (
+                BleakClient if self._fresh_services else BleakClientWithServiceCache
+            )
             self._client = await establish_connection(
-                BleakClientWithServiceCache,
+                client_class,
                 device,
                 self._address,
                 max_attempts=3,
@@ -255,14 +273,7 @@ class Ch592OtaClient:
 
     def _find_ota_char(self):
         assert self._client is not None
-        services = self._client.services
-        if services is None:
-            raise OtaError("未能发现 GATT 服务")
-        for service in services:
-            for char in service.characteristics:
-                if char.uuid.lower() == OTA_CHAR_UUID:
-                    return char
-        raise OtaError("设备上没有找到 OTA 特征值，请确认已进入 OTA 模式")
+        return _find_ota_char(self._client)
 
     def _get_mtu(self) -> int:
         assert self._client is not None
@@ -501,6 +512,53 @@ class Ch592OtaClient:
             pass
 
 
+async def async_request_ota(hass: HomeAssistant, address: str) -> None:
+    """Ask remote-capable normal firmware to reboot into its existing OTA mode.
+
+    A transport failure after the write is deliberately not a failure by itself:
+    the coordinator still requires a fresh OTA advertisement before uploading.
+    """
+    device = async_ble_device_from_address(hass, address, connectable=True)
+    if device is None:
+        raise OtaError("未找到普通广播窗口中的可连接设备")
+
+    client: BleakClient | None = None
+    try:
+        client = await establish_connection(
+            BleakClient,
+            device,
+            address,
+            max_attempts=1,
+            timeout=10.0,
+        )
+        char = _find_ota_char(client)
+        try:
+            await asyncio.wait_for(
+                client.write_gatt_char(char, REMOTE_OTA_FRAME, response=True),
+                timeout=5,
+            )
+        except TimeoutError:
+            return
+        try:
+            status = await asyncio.wait_for(client.read_gatt_char(char), timeout=5)
+        except (TimeoutError, BleakError, EOFError, OSError):
+            return
+        if bytes(status) != b"\x00\x00":
+            raise OtaError(f"设备拒绝进入 OTA: {bytes(status).hex()}")
+    except OtaError:
+        raise
+    except (BleakError, EOFError, OSError) as err:
+        raise OtaError(f"普通模式唤醒连接失败: {err}") from err
+    finally:
+        if client is not None:
+            try:
+                await asyncio.wait_for(
+                    client.disconnect(), REMOTE_OTA_DISCONNECT_TIMEOUT
+                )
+            except (TimeoutError, BleakError, EOFError, OSError):
+                pass
+
+
 async def async_set_gas(
     hass: HomeAssistant, address: str, value_units: int
 ) -> int:
@@ -528,7 +586,10 @@ async def async_set_gas(
 
 
 async def async_set_threshold(
-    hass: HomeAssistant, address: str, value: int
+    hass: HomeAssistant,
+    address: str,
+    value: int,
+    fresh_services: bool = False,
 ) -> int:
     """Write the TCRT5000 pulse threshold (device must be in OTA mode).
 
@@ -551,6 +612,7 @@ async def async_set_threshold(
         address,
         payload,
         "设备固件不支持调整阈值（需要 1.4.1 及以上），请先升级固件",
+        fresh_services=fresh_services,
     )
     return int(value)
 
@@ -560,6 +622,7 @@ async def _async_write_config(
     address: str,
     payload: bytes,
     unsupported_message: str,
+    fresh_services: bool = False,
 ) -> None:
     """Send a config command and check the 2-byte status.
 
@@ -574,8 +637,11 @@ async def _async_write_config(
 
     client: BleakClient | None = None
     try:
+        client_class = (
+            BleakClient if fresh_services else BleakClientWithServiceCache
+        )
         client = await establish_connection(
-            BleakClientWithServiceCache,
+            client_class,
             device,
             address,
             max_attempts=3,

@@ -1,6 +1,9 @@
 flash:
   name: Flash firmware
-  description: Upload a WCH backup-OTA image to a CH592 device that is in OTA mode.
+  description: >-
+    Upload a WCH backup-OTA image. Firmware 1.6.0+ can be woken from its normal
+    advertising window after complete size/CRC32/SHA-256 validation; older firmware
+    must enter OTA with button B or the three-day window first.
   fields:
     address:
       name: Bluetooth address
