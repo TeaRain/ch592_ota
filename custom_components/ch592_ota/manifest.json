@@ -7,10 +7,11 @@
     "bluetooth",
     "bluetooth_adapters"
   ],
-  "documentation": "https://www.wch-ic.com/",
+  "documentation": "https://gitee.com/zigbridge/ch592_ota",
   "iot_class": "local_push",
+  "issue_tracker": "https://gitee.com/zigbridge/ch592_ota/issues",
   "requirements": [
     "bleak-retry-connector>=3.0.0"
   ],
-  "version": "0.8.3"
+  "version": "0.8.4"
 }

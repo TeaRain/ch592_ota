@@ -86,6 +86,7 @@ class Ch592OtaCoordinator:
             "ads": 0,
             "last_seen": None,
             "ota_mode": False,
+            "ota_confirmed": False,
             "ota_ads": 0,
             "status": "idle",
             "phase": "idle",
@@ -207,9 +208,14 @@ class Ch592OtaCoordinator:
         # carrying 0xFEE0) and must be checked before the BTHome parser: HA can
         # report a BTHome payload for the same address, and the cached device
         # name is "GasMeter OTA" in both modes, so the name proves nothing.
-        if self._is_ota_advertisement(service_info):
+        was_ota_mode = bool(self.data["ota_mode"])
+        was_ota_confirmed = bool(self.data.get("ota_confirmed"))
+        raw_uuids = self._raw_16bit_uuids(getattr(service_info, "raw", None))
+        is_ota = self._is_ota_advertisement(service_info)
+        self.data["ota_confirmed"] = is_ota and raw_uuids is not None
+        if is_ota:
             self.data["ota_ads"] = int(self.data.get("ota_ads", 0)) + 1
-            if not self.data["ota_mode"]:
+            if not was_ota_mode:
                 _LOGGER.info(
                     "检测到 OTA 广播 (uuids=%s data=%s)",
                     list(service_info.service_uuids),
@@ -217,6 +223,12 @@ class Ch592OtaCoordinator:
                 )
                 self.data["ota_mode"] = True
                 self._notify()
+            # A fallback advertisement may have opened the OTA window before
+            # raw confirmation arrived. Re-evaluate only on either rising edge,
+            # not on every OTA frame.
+            if not was_ota_mode or (
+                self.data["ota_confirmed"] and not was_ota_confirmed
+            ):
                 # An armed config write (threshold and/or gas) wins over an
                 # automatic upgrade: the user pressed B for that, and a
                 # finished upgrade would reboot the device out of OTA mode
@@ -271,6 +283,8 @@ class Ch592OtaCoordinator:
             payload = raw[index + 1 : end]
             parsed = True
             if ad_type in (0x02, 0x03):  # partial/complete 16-bit UUID list
+                if len(payload) % 2:
+                    return None
                 for offset in range(0, len(payload) - 1, 2):
                     uuids.add(int.from_bytes(payload[offset : offset + 2], "little"))
             elif ad_type == 0x16 and len(payload) >= 2:  # 16-bit service data
@@ -634,6 +648,8 @@ class Ch592OtaCoordinator:
 
         if not self.auto_install:
             return skip("选项 auto_install_on_ota_mode 已关闭")
+        if not self.data.get("ota_confirmed"):
+            return skip("缺少可靠的原始 OTA 广播，未自动升级")
         if self._threshold_pending_value() is not None:
             return skip("有待写阈值，写入成功后再检查自动升级")
         if not self._seen_bthome:

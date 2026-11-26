@@ -246,6 +246,11 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
             if task is not None and not task.done():
                 task.cancel()
 
+    def test_auto_install_defaults_off_and_explicit_option_is_respected(self):
+        self.assertFalse(self.coordinator.auto_install)
+        self.entry.options[coordinator_module.CONF_AUTO_INSTALL] = True
+        self.assertTrue(self.coordinator.auto_install)
+
     async def test_start_ota_rejects_active_config_task(self):
         self.coordinator._gas_task = asyncio.create_task(asyncio.sleep(30))
         with self.assertRaises(HomeAssistantError):
@@ -623,7 +628,8 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events, [("write", 150), ("upgrade", None)])
 
     async def test_timed_window_threshold_then_real_auto_upgrade_flow(self):
-        self.coordinator.data["ota_mode"] = False
+        self.entry.options[coordinator_module.CONF_AUTO_INSTALL] = True
+        self.coordinator.data.update(ota_mode=False, ota_confirmed=True)
         await self.coordinator.async_set_threshold(152)
         self.coordinator.data.update(ota_mode=True, firmware_version="1.4.9")
         self.coordinator._seen_bthome = True
@@ -1105,6 +1111,102 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(wait.done())
         self.coordinator.data["ads"] = 6
         self.assertTrue(await asyncio.wait_for(wait, timeout=1))
+
+    async def test_unconfirmed_fallback_ota_does_not_auto_install(self):
+        self.entry.options[coordinator_module.CONF_AUTO_INSTALL] = True
+        self.coordinator._seen_bthome = True
+        self.coordinator.data["firmware_version"] = "1.4.3"
+        self.coordinator.cloud = types.SimpleNamespace(data={"version": "1.6.1"})
+
+        for raw in (
+            None,
+            b"",
+            bytes.fromhex("0503e0ff"),
+            bytes.fromhex("0403e0feff"),
+        ):
+            with self.subTest(raw=raw):
+                self.coordinator.data.update(ota_mode=False, auto_note=None)
+                info = types.SimpleNamespace(
+                    name="GasMeter OTA",
+                    service_uuids=[coordinator_module.OTA_SERVICE_UUID],
+                    service_data={},
+                    raw=raw,
+                )
+                with (
+                    patch.object(
+                        self.coordinator,
+                        "_async_auto_install",
+                        new_callable=unittest.mock.Mock,
+                    ) as install,
+                    patch.object(self.hass, "async_create_task") as create_task,
+                ):
+                    self.coordinator._async_bt_callback(info, None)
+
+                self.assertTrue(self.coordinator.data["ota_mode"])
+                create_task.assert_not_called()
+                install.assert_not_called()
+                self.assertFalse(self.coordinator.data["ota_confirmed"])
+                self.assertIn("原始", self.coordinator.data["auto_note"])
+
+    async def test_raw_confirmed_ota_allows_explicitly_enabled_auto_install(self):
+        self.entry.options[coordinator_module.CONF_AUTO_INSTALL] = True
+        self.coordinator._seen_bthome = True
+        self.coordinator.data["firmware_version"] = "1.4.3"
+        self.coordinator.cloud = types.SimpleNamespace(data={"version": "1.6.1"})
+        info = types.SimpleNamespace(
+            name="GasMeter OTA",
+            service_uuids=[coordinator_module.OTA_SERVICE_UUID],
+            service_data={"0000fcd2-0000-1000-8000-00805f9b34fb": b"stale"},
+            raw=bytes.fromhex("0201060503e0ffe0fe"),
+        )
+
+        with (
+            patch.object(
+                self.coordinator,
+                "_async_auto_install",
+                new_callable=unittest.mock.Mock,
+            ) as install,
+            patch.object(self.hass, "async_create_task") as create_task,
+        ):
+            self.coordinator._async_bt_callback(info, None)
+
+        self.assertTrue(self.coordinator.data["ota_confirmed"])
+        install.assert_called_once_with({"version": "1.6.1"}, "1.6.1")
+        create_task.assert_called_once()
+
+    async def test_valid_raw_after_fallback_enables_auto_install_in_same_window(self):
+        self.entry.options[coordinator_module.CONF_AUTO_INSTALL] = True
+        self.coordinator._seen_bthome = True
+        self.coordinator.data["firmware_version"] = "1.4.3"
+        self.coordinator.cloud = types.SimpleNamespace(data={"version": "1.6.1"})
+        common = {
+            "name": "GasMeter OTA",
+            "service_uuids": [coordinator_module.OTA_SERVICE_UUID],
+            "service_data": {},
+        }
+
+        with (
+            patch.object(
+                self.coordinator,
+                "_async_auto_install",
+                new_callable=unittest.mock.Mock,
+            ) as install,
+            patch.object(self.hass, "async_create_task") as create_task,
+        ):
+            self.coordinator._async_bt_callback(
+                types.SimpleNamespace(**common, raw=b""), None
+            )
+            self.coordinator._async_bt_callback(
+                types.SimpleNamespace(
+                    **common, raw=bytes.fromhex("0201060503e0ffe0fe")
+                ),
+                None,
+            )
+
+        self.assertTrue(self.coordinator.data["ota_mode"])
+        self.assertTrue(self.coordinator.data["ota_confirmed"])
+        install.assert_called_once_with({"version": "1.6.1"}, "1.6.1")
+        create_task.assert_called_once()
 
     def test_ota_raw_packet_wins_over_cached_bthome_service_data(self):
         info = types.SimpleNamespace(
