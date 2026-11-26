@@ -99,6 +99,43 @@ def _find_ota_char(client: BleakClient):
     raise OtaError("设备上没有找到 OTA 特征值，请确认已进入 OTA 模式")
 
 
+async def _async_establish_ota_connection(
+    device,
+    address: str,
+    fresh_services: bool = False,
+    on_client: Callable[[BleakClient], None] | None = None,
+) -> BleakClient:
+    """Connect for OTA, forcing fresh handles after a firmware mode switch."""
+    client_class = BleakClient if fresh_services else BleakClientWithServiceCache
+    cleared_caches: set[int] = set()
+    while True:
+        client = await establish_connection(
+            client_class,
+            device,
+            address,
+            max_attempts=3,
+            timeout=30.0,
+            use_services_cache=not fresh_services,
+        )
+        if on_client is not None:
+            on_client(client)
+        if not fresh_services:
+            return client
+        cache_key = _service_cache_identity(client)
+        if cache_key is None or cache_key in cleared_caches:
+            return client
+        cleanup_deadline = (
+            asyncio.get_running_loop().time() + REMOTE_OTA_DISCONNECT_TIMEOUT
+        )
+        try:
+            await _async_clear_connected_service_cache(client, timeout=30.0)
+            cleared_caches.add(cache_key)
+            await _disconnect_before_reconnect(client, cleanup_deadline)
+        except BaseException:
+            await _disconnect_normal_client(client, cleanup_deadline)
+            raise
+
+
 class Ch592OtaClient:
     """Perform a WCH OTA upload over an existing BLE connection."""
 
@@ -152,16 +189,15 @@ class Ch592OtaClient:
                 "未找到可连接的设备。请长按 B 键 3 秒进入 OTA 模式，并确认蓝牙代理在线。"
             )
 
+        def track_client(client: BleakClient) -> None:
+            self._client = client
+
         try:
-            client_class = (
-                BleakClient if self._fresh_services else BleakClientWithServiceCache
-            )
-            self._client = await establish_connection(
-                client_class,
+            self._client = await _async_establish_ota_connection(
                 device,
                 self._address,
-                max_attempts=3,
-                timeout=30.0,
+                fresh_services=self._fresh_services,
+                on_client=track_client,
             )
             self._char = self._find_ota_char()
             requested = (
@@ -517,6 +553,36 @@ class Ch592OtaClient:
             pass
 
 
+def _service_cache_identity(client: BleakClient) -> int | None:
+    """Identify the selected ESPHome proxy's shared cache, if any."""
+    cache = getattr(getattr(client, "_backend", None), "_cache", None)
+    return id(cache) if cache is not None else None
+
+
+async def _async_clear_connected_service_cache(
+    client: BleakClient, timeout: float
+) -> None:
+    """Clear the selected ESPHome cache through HA's connected wrapper.
+
+    HaBleakClientWrapper has no backend until connect() selects a proxy. Once
+    connected, its public clear_cache() delegates to ESPHomeClient, which clears
+    the host services before clearing the proxy cache. A subsequent connection
+    with dangerous_use_bleak_cache=False discovers the new mode's real handles.
+    """
+    clear_cache = getattr(client, "clear_cache", None)
+    if clear_cache is None:
+        clear_cache = getattr(client._backend, "clear_cache")
+    if timeout <= 0:
+        raise TimeoutError
+    try:
+        await asyncio.wait_for(clear_cache(), timeout)
+    except BleakError as err:
+        # ESPHome has already cleared its host cache if the device drops while
+        # the proxy-side clear is requested; reconnecting still forces discovery.
+        if "not connected" not in str(err).lower():
+            raise
+
+
 async def _disconnect_normal_client(client: BleakClient, deadline: float) -> None:
     """Disconnect without letting cleanup overrun the ordinary-wake deadline."""
     remaining = max(0.01, deadline - asyncio.get_running_loop().time())
@@ -528,12 +594,32 @@ async def _disconnect_normal_client(client: BleakClient, deadline: float) -> Non
         pass
 
 
+async def _disconnect_before_reconnect(
+    client: BleakClient, deadline: float
+) -> None:
+    """Disconnect strictly before losing the only reference to an old link."""
+    remaining = max(0.01, deadline - asyncio.get_running_loop().time())
+    try:
+        await asyncio.wait_for(
+            client.disconnect(), min(REMOTE_OTA_DISCONNECT_TIMEOUT, remaining)
+        )
+    except (TimeoutError, BleakError, EOFError, OSError) as err:
+        if client.is_connected:
+            raise OtaError(f"清缓存后旧连接未断开: {err}") from err
+    if client.is_connected:
+        raise OtaError("清缓存后旧连接仍显示为已连接，停止重连")
+
+
 async def _async_connect_normal(
-    hass: HomeAssistant, address: str, deadline: float
+    hass: HomeAssistant,
+    address: str,
+    deadline: float,
+    on_client: Callable[[BleakClient], None] | None = None,
 ) -> BleakClient:
     """Connect directly with a real per-call timeout and bounded transient retries."""
     loop = asyncio.get_running_loop()
     last_error: Exception | None = None
+    cleared_caches: set[int] = set()
     while True:
         remaining = deadline - loop.time()
         if remaining <= 0:
@@ -546,6 +632,8 @@ async def _async_connect_normal(
             last_error = OtaError("未找到普通广播窗口中的可连接设备")
         else:
             client = BleakClient(device, timeout=remaining)
+            if on_client is not None:
+                on_client(client)
             try:
                 # bleak-retry-connector passes its constructor timeout through but
                 # calls connect() with its own fixed 20 s timeout. This direct call
@@ -556,6 +644,17 @@ async def _async_connect_normal(
                     ),
                     remaining,
                 )
+                # HA selects the real ESPHome backend only after connect().
+                # Clear each selected proxy once, then reconnect without cache
+                # so normal/OTA mode switches cannot reuse stale numeric handles.
+                cache_key = _service_cache_identity(client)
+                if cache_key is not None and cache_key not in cleared_caches:
+                    await _async_clear_connected_service_cache(
+                        client, timeout=max(0.0, deadline - loop.time())
+                    )
+                    cleared_caches.add(cache_key)
+                    await _disconnect_before_reconnect(client, deadline)
+                    continue
                 return client
             except asyncio.CancelledError:
                 await _disconnect_normal_client(client, deadline)
@@ -582,8 +681,15 @@ async def async_request_ota(
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(0.0, timeout)
     client: BleakClient | None = None
+
+    def track_client(connected_client: BleakClient) -> None:
+        nonlocal client
+        client = connected_client
+
     try:
-        client = await _async_connect_normal(hass, address, deadline)
+        client = await _async_connect_normal(
+            hass, address, deadline, on_client=track_client
+        )
         char = _find_ota_char(client)
         try:
             await asyncio.wait_for(
@@ -687,16 +793,17 @@ async def _async_write_config(
         )
 
     client: BleakClient | None = None
+
+    def track_client(connected_client: BleakClient) -> None:
+        nonlocal client
+        client = connected_client
+
     try:
-        client_class = (
-            BleakClient if fresh_services else BleakClientWithServiceCache
-        )
-        client = await establish_connection(
-            client_class,
+        client = await _async_establish_ota_connection(
             device,
             address,
-            max_attempts=3,
-            timeout=30.0,
+            fresh_services=fresh_services,
+            on_client=track_client,
         )
         ota_char = None
         for service in client.services or []:
