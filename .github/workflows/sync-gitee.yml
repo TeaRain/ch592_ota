@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Mirror Gitee and publish 0.8.3
+      - name: Mirror Gitee and publish 0.8.4
         run: |
           set -euo pipefail
           cloned=false
