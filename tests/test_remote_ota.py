@@ -71,6 +71,16 @@ class FakeClient:
         self.writes = []
         self.disconnected = False
         self.disconnect_gate = None
+        self.connect_calls = []
+        self.connect_results = []
+
+    async def connect(self, **kwargs):
+        self.connect_calls.append(kwargs)
+        if self.connect_results:
+            result = self.connect_results.pop(0)
+            if result is not None:
+                raise result
+        self.is_connected = True
 
     async def write_gatt_char(self, char, payload, response=False):
         self.writes.append((char, payload, response))
@@ -89,14 +99,20 @@ class RemoteOtaBleTests(unittest.IsolatedAsyncioTestCase):
     async def test_wake_uses_plain_client_exact_frame_and_status(self):
         fake = FakeClient()
         classes = []
+        plain_class = ble_ota.BleakClient
 
         async def connect(client_class, *args, **kwargs):
-            classes.append(client_class)
+            classes.append(plain_class)
+            return fake
+
+        def plain_client(*args, **kwargs):
+            classes.append(plain_class)
             return fake
 
         with (
             patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
             patch.object(ble_ota, "establish_connection", connect),
+            patch.object(ble_ota, "BleakClient", side_effect=plain_client),
         ):
             await ble_ota.async_request_ota(object(), "AA:BB:CC:DD:EE:FF")
 
@@ -107,6 +123,45 @@ class RemoteOtaBleTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(fake.disconnected)
 
+    async def test_wake_connection_covers_full_normal_broadcast_period(self):
+        fake = FakeClient()
+
+        async def connect(*args, **kwargs):
+            return fake
+
+        with (
+            patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
+            patch.object(ble_ota, "establish_connection", connect),
+            patch.object(ble_ota, "BleakClient", return_value=fake),
+        ):
+            await ble_ota.async_request_ota(object(), "AA:BB:CC:DD:EE:FF")
+
+        self.assertEqual(len(fake.connect_calls), 1)
+        self.assertAlmostEqual(fake.connect_calls[0]["timeout"], 65.0, delta=0.01)
+
+    async def test_wake_retries_immediate_failure_within_same_window(self):
+        fake = FakeClient()
+        fake.connect_results = [BleakError("window closed"), None]
+
+        async def connect(*args, **kwargs):
+            return fake
+
+        async def no_sleep(_delay):
+            return None
+
+        with (
+            patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
+            patch.object(ble_ota, "establish_connection", connect),
+            patch.object(ble_ota, "BleakClient", return_value=fake),
+            patch.object(ble_ota.asyncio, "sleep", side_effect=no_sleep),
+        ):
+            await ble_ota.async_request_ota(object(), "AA:BB:CC:DD:EE:FF")
+
+        self.assertEqual(len(fake.connect_calls), 2)
+        self.assertAlmostEqual(fake.connect_calls[0]["timeout"], 65.0, delta=0.01)
+        self.assertLessEqual(fake.connect_calls[1]["timeout"], 65.0)
+        self.assertGreater(fake.connect_calls[1]["timeout"], 0)
+
     async def test_wake_rejects_error_status(self):
         fake = FakeClient(status=b"\xFE\x00")
 
@@ -116,6 +171,7 @@ class RemoteOtaBleTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
             patch.object(ble_ota, "establish_connection", connect),
+            patch.object(ble_ota, "BleakClient", return_value=fake),
         ):
             with self.assertRaises(ble_ota.OtaError):
                 await ble_ota.async_request_ota(object(), "AA:BB:CC:DD:EE:FF")
@@ -148,6 +204,7 @@ class RemoteOtaBleTests(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
             patch.object(ble_ota, "establish_connection", connect),
+            patch.object(ble_ota, "BleakClient", return_value=fake),
             patch.object(ble_ota, "REMOTE_OTA_DISCONNECT_TIMEOUT", 0, create=True),
         ):
             await asyncio.wait_for(
@@ -155,7 +212,7 @@ class RemoteOtaBleTests(unittest.IsolatedAsyncioTestCase):
                 timeout=0.1,
             )
 
-    async def _run_upload(self, fresh_services, classes):
+    async def _run_upload(self, fresh_services, classes, timeouts):
         client = ble_ota.Ch592OtaClient(
             object(),
             "AA:BB:CC:DD:EE:FF",
@@ -167,6 +224,7 @@ class RemoteOtaBleTests(unittest.IsolatedAsyncioTestCase):
 
         async def connect(client_class, *args, **kwargs):
             classes.append(client_class)
+            timeouts.append(kwargs["timeout"])
             return fake
 
         client._find_ota_char = lambda: fake.char
@@ -192,9 +250,11 @@ class RemoteOtaBleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mode_switch_requires_fresh_gatt_discovery(self):
         classes = []
-        await self._run_upload(False, classes)
-        await self._run_upload(True, classes)
+        timeouts = []
+        await self._run_upload(False, classes, timeouts)
+        await self._run_upload(True, classes, timeouts)
         self.assertEqual(classes, [CachedBleakClient, PlainBleakClient])
+        self.assertEqual(timeouts, [30.0, 30.0])
 
 
 if __name__ == "__main__":

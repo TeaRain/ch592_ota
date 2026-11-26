@@ -63,6 +63,11 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# A normal BTHome window lasts only 300 ms once per 60 seconds. Keep the
+# connection attempt alive through the next window instead of timing out
+# between advertisements. This does not affect the 30 s upload connection.
+REMOTE_OTA_CONNECT_TIMEOUT = 65.0
+
 ProgressCallback = Callable[[int, str, int, int], None]
 FAST_CRC32_PROTOCOL = 8
 
@@ -512,35 +517,86 @@ class Ch592OtaClient:
             pass
 
 
-async def async_request_ota(hass: HomeAssistant, address: str) -> None:
+async def _disconnect_normal_client(client: BleakClient, deadline: float) -> None:
+    """Disconnect without letting cleanup overrun the ordinary-wake deadline."""
+    remaining = max(0.01, deadline - asyncio.get_running_loop().time())
+    try:
+        await asyncio.wait_for(
+            client.disconnect(), min(REMOTE_OTA_DISCONNECT_TIMEOUT, remaining)
+        )
+    except (TimeoutError, BleakError, EOFError, OSError):
+        pass
+
+
+async def _async_connect_normal(
+    hass: HomeAssistant, address: str, deadline: float
+) -> BleakClient:
+    """Connect directly with a real per-call timeout and bounded transient retries."""
+    loop = asyncio.get_running_loop()
+    last_error: Exception | None = None
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            detail = str(last_error) if last_error else "连接超时"
+            raise OtaError(f"普通模式唤醒连接失败: {detail}") from last_error
+
+        device = async_ble_device_from_address(hass, address, connectable=True)
+        client: BleakClient | None = None
+        if device is None:
+            last_error = OtaError("未找到普通广播窗口中的可连接设备")
+        else:
+            client = BleakClient(device, timeout=remaining)
+            try:
+                # bleak-retry-connector passes its constructor timeout through but
+                # calls connect() with its own fixed 20 s timeout. This direct call
+                # is the actual boundary that must cover the next 60 s window.
+                await asyncio.wait_for(
+                    client.connect(
+                        timeout=remaining, dangerous_use_bleak_cache=False
+                    ),
+                    remaining,
+                )
+                return client
+            except asyncio.CancelledError:
+                await _disconnect_normal_client(client, deadline)
+                raise
+            except (TimeoutError, BleakError, EOFError, OSError) as err:
+                last_error = err
+                await _disconnect_normal_client(client, deadline)
+
+        # Immediate proxy failures must not return to the outer minutely wait.
+        # Retry inside this bounded window, with cancellation-safe light backoff.
+        await asyncio.sleep(min(1.0, max(0.0, deadline - loop.time())))
+
+
+async def async_request_ota(
+    hass: HomeAssistant,
+    address: str,
+    timeout: float = REMOTE_OTA_CONNECT_TIMEOUT,
+) -> None:
     """Ask remote-capable normal firmware to reboot into its existing OTA mode.
 
     A transport failure after the write is deliberately not a failure by itself:
     the coordinator still requires a fresh OTA advertisement before uploading.
     """
-    device = async_ble_device_from_address(hass, address, connectable=True)
-    if device is None:
-        raise OtaError("未找到普通广播窗口中的可连接设备")
-
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, timeout)
     client: BleakClient | None = None
     try:
-        client = await establish_connection(
-            BleakClient,
-            device,
-            address,
-            max_attempts=1,
-            timeout=10.0,
-        )
+        client = await _async_connect_normal(hass, address, deadline)
         char = _find_ota_char(client)
         try:
             await asyncio.wait_for(
                 client.write_gatt_char(char, REMOTE_OTA_FRAME, response=True),
-                timeout=5,
+                timeout=min(5.0, max(0.0, deadline - loop.time())),
             )
         except TimeoutError:
             return
         try:
-            status = await asyncio.wait_for(client.read_gatt_char(char), timeout=5)
+            status = await asyncio.wait_for(
+                client.read_gatt_char(char),
+                timeout=min(5.0, max(0.0, deadline - loop.time())),
+            )
         except (TimeoutError, BleakError, EOFError, OSError):
             return
         if bytes(status) != b"\x00\x00":
@@ -551,12 +607,7 @@ async def async_request_ota(hass: HomeAssistant, address: str) -> None:
         raise OtaError(f"普通模式唤醒连接失败: {err}") from err
     finally:
         if client is not None:
-            try:
-                await asyncio.wait_for(
-                    client.disconnect(), REMOTE_OTA_DISCONNECT_TIMEOUT
-                )
-            except (TimeoutError, BleakError, EOFError, OSError):
-                pass
+            await _disconnect_normal_client(client, deadline)
 
 
 async def async_set_gas(

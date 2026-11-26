@@ -1005,7 +1005,15 @@ class Ch592OtaCoordinator:
             self.data.update(status="starting", phase="connecting_control")
             self._notify()
             try:
-                await async_request_ota(self.hass, self.address)
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                await asyncio.wait_for(
+                    async_request_ota(
+                        self.hass, self.address, timeout=remaining
+                    ),
+                    remaining,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as err:  # noqa: BLE001 - retry at the next window
@@ -1031,15 +1039,22 @@ class Ch592OtaCoordinator:
             self.data["wake_error"] = "已发送唤醒请求，但未收到新的 OTA 广播"
             self._notify()
 
-        raise OtaError("等待普通广播唤醒窗口超时")
+        attempts = int(self.data.get("wake_attempts", 0))
+        last_error = self.data.get("wake_error")
+        message = f"等待普通广播唤醒窗口超时（{attempts} 次连接尝试）"
+        if last_error:
+            message += f"；最后错误：{last_error}"
+        raise OtaError(message)
 
     async def _async_run_ota(
         self, image: bytes, target: str | None, wake_required: bool = False
     ) -> None:
+        entered_ota = not wake_required
         try:
             self._reboot_start_seq = None
             if wake_required:
                 await self._async_remote_wake()
+                entered_ota = True
                 pending_threshold = self._threshold_pending_value()
                 if pending_threshold is not None:
                     await self._async_write_threshold(
@@ -1129,7 +1144,7 @@ class Ch592OtaCoordinator:
             _LOGGER.exception("CH592 OTA 失败")
             message = str(err)
             lowered = message.lower()
-            if "connect" in lowered or "未找到可连接" in message:
+            if entered_ota and ("connect" in lowered or "未找到可连接" in message):
                 message += "（设备已退出 OTA 模式，请重新长按 B 键 3 秒后重试）"
             self.data.update(status="failed", phase="failed", error=message)
             self._notify()

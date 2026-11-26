@@ -476,6 +476,19 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(entity=entity_class.__name__):
                 self.assertEqual(entity_class._attr_name, label)
 
+    async def test_ota_status_exposes_remote_wake_diagnostics(self):
+        _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
+        module = _load(f"{PACKAGE}.sensor", REPO / "custom_components/ch592_ota/sensor.py")
+        self.coordinator.data.update(
+            wake_attempts=2, wake_error="proxy disconnected"
+        )
+        entity = module.Ch592OtaStatusSensor(self.coordinator, self.entry)
+
+        attributes = entity.extra_state_attributes
+
+        self.assertEqual(attributes["wake_attempts"], 2)
+        self.assertEqual(attributes["wake_error"], "proxy disconnected")
+
     async def test_saving_calibration_number_calibrates_immediately(self):
         _load(f"{PACKAGE}.entity", REPO / "custom_components/ch592_ota/entity.py")
         module = _load(f"{PACKAGE}.number", REPO / "custom_components/ch592_ota/number.py")
@@ -881,7 +894,7 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         first_failed = asyncio.Event()
         calls = 0
 
-        async def request(*args):
+        async def request(*args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -901,6 +914,55 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, 2)
         self.assertEqual(self.coordinator.data["wake_attempts"], 2)
+
+    async def test_remote_wake_timeout_preserves_attempt_count_and_last_error(self):
+        self.coordinator.data.update(ads=0, ota_ads=0, ota_mode=False)
+        request_started = asyncio.Event()
+
+        async def request(*args, **kwargs):
+            request_started.set()
+            raise coordinator_module.OtaError("connect timeout")
+
+        with (
+            patch.object(coordinator_module, "async_request_ota", request),
+            patch.object(coordinator_module, "REMOTE_OTA_WAKE_TIMEOUT", 0.01),
+        ):
+            task = asyncio.create_task(self.coordinator._async_remote_wake())
+            await asyncio.sleep(0)
+            self._emit_normal_advertisement()
+            await asyncio.wait_for(request_started.wait(), timeout=1)
+            with self.assertRaises(coordinator_module.OtaError) as caught:
+                await asyncio.wait_for(task, timeout=1)
+
+        self.assertEqual(self.coordinator.data["wake_attempts"], 1)
+        self.assertIn("1 次", str(caught.exception))
+        self.assertIn("connect timeout", str(caught.exception))
+
+    async def test_remote_wake_bounds_inflight_connection_to_remaining_deadline(self):
+        self.coordinator.data.update(ads=0, ota_ads=0, ota_mode=False)
+        request_started = asyncio.Event()
+        timeouts = []
+
+        async def request(*args, **kwargs):
+            timeouts.append(kwargs.get("timeout"))
+            request_started.set()
+            await asyncio.sleep(1)
+
+        with (
+            patch.object(coordinator_module, "async_request_ota", request),
+            patch.object(coordinator_module, "REMOTE_OTA_WAKE_TIMEOUT", 0.02),
+        ):
+            task = asyncio.create_task(self.coordinator._async_remote_wake())
+            await asyncio.sleep(0)
+            self._emit_normal_advertisement()
+            await asyncio.wait_for(request_started.wait(), timeout=1)
+            with self.assertRaises(coordinator_module.OtaError):
+                await asyncio.wait_for(task, timeout=0.2)
+
+        self.assertEqual(len(timeouts), 1)
+        self.assertIsNotNone(timeouts[0])
+        self.assertGreater(timeouts[0], 0)
+        self.assertLessEqual(timeouts[0], 0.02)
 
     async def test_cancel_while_waiting_window_prevents_stale_wake(self):
         request = unittest.mock.AsyncMock()
@@ -922,6 +984,22 @@ class CoordinatorReliabilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             await self.coordinator._async_wait_for_ota_switch(4, timeout=0)
         )
+
+    async def test_remote_wake_failure_does_not_claim_ota_mode_was_entered(self):
+        async def wake():
+            raise coordinator_module.OtaError(
+                "普通模式唤醒连接失败: connect timeout"
+            )
+
+        with patch.object(self.coordinator, "_async_remote_wake", side_effect=wake):
+            await self.coordinator._async_run_ota(
+                b"\x6f\x00\x00\x00", "1.6.2", wake_required=True
+            )
+
+        error = self.coordinator.data["error"]
+        self.assertIn("connect timeout", error)
+        self.assertNotIn("重新长按 B", error)
+        self.assertNotIn("已退出 OTA 模式", error)
 
     async def test_remote_wake_writes_threshold_before_upload_with_fresh_gatt(self):
         self.coordinator.data.update(ota_mode=False, threshold_pending=165)
