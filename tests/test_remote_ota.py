@@ -5,6 +5,7 @@ import importlib.util
 import sys
 import types
 import unittest
+from functools import partial
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -44,6 +45,10 @@ def _load(name, path):
 _module("bleak", BleakClient=PlainBleakClient)
 _module("bleak.exc", BleakError=BleakError)
 _module(
+    "aioesphomeapi",
+    BluetoothProxyFeature=types.SimpleNamespace(CACHE_CLEARING=1 << 7),
+)
+_module(
     "bleak_retry_connector",
     BleakClientWithServiceCache=CachedBleakClient,
     establish_connection=None,
@@ -53,6 +58,7 @@ _module("homeassistant.components")
 _module(
     "homeassistant.components.bluetooth",
     async_ble_device_from_address=lambda *args, **kwargs: object(),
+    async_scanner_devices_by_address=lambda *args, **kwargs: [],
 )
 _module("homeassistant.core", HomeAssistant=object, callback=lambda function: function)
 package = _module(PACKAGE)
@@ -103,13 +109,70 @@ class FakeEsphomeBackend:
         self._cache = object()
         self.clear_calls = 0
         self.clear_gate = None
+        self.clear_result = True
 
     async def clear_cache(self):
         self.clear_calls += 1
         self.cached_services = None
         if self.clear_gate is not None:
             await self.clear_gate.wait()
-        return True
+        return self.clear_result
+
+
+class FakeEsphomeCache:
+    """Model the per-proxy host cache held by ESPHomeClientData."""
+
+    def __init__(self, backend):
+        self.backend = backend
+        self.clear_calls = 0
+        backend._cache = self
+
+    def clear_gatt_services_cache(self, address):
+        self.clear_calls += 1
+        self.backend.cached_services = None
+
+    def clear_gatt_mtu_cache(self, address):
+        pass
+
+
+class FakeProxyApi:
+    def __init__(self):
+        self.calls = []
+        self.error = None
+        self.gate = None
+        self.success = True
+
+    async def bluetooth_device_clear_cache(self, address, timeout=30.0):
+        self.calls.append((address, timeout))
+        if self.gate is not None:
+            await self.gate.wait()
+        if self.error is not None:
+            raise self.error
+        return types.SimpleNamespace(success=self.success)
+
+
+def _esphome_path(backend, source, feature_flags=1 << 7):
+    cache = FakeEsphomeCache(backend)
+    api = FakeProxyApi()
+    device_info = types.SimpleNamespace(
+        bluetooth_proxy_feature_flags_compat=lambda api_version: feature_flags
+    )
+    client_data = types.SimpleNamespace(
+        bluetooth_device=types.SimpleNamespace(cache=cache),
+        client=api,
+        device_info=device_info,
+        api_version=object(),
+    )
+    connector = types.SimpleNamespace(
+        client=partial(object, client_data=client_data),
+        source=source,
+        can_connect=lambda: True,
+    )
+    scanner = types.SimpleNamespace(connector=connector)
+    path = types.SimpleNamespace(
+        scanner=scanner, ble_device=object(), advertisement=object()
+    )
+    return path, cache, api
 
 
 class FakeHaWrapperClient(FakeClient):
@@ -161,6 +224,31 @@ class FakeHaWrapperClient(FakeClient):
 
 
 class RemoteOtaBleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_bluetooth_import_and_wake_do_not_require_esphome(self):
+        package_name = f"{PACKAGE}_without_esphome"
+        local_package = _module(package_name)
+        local_package.__path__ = [str(REPO / "custom_components/ch592_ota")]
+        _load(f"{package_name}.const", REPO / "custom_components/ch592_ota/const.py")
+        fake = FakeClient()
+
+        with patch.dict(sys.modules, {"aioesphomeapi": None}):
+            try:
+                local_ble = _load(
+                    f"{package_name}.ble_ota",
+                    REPO / "custom_components/ch592_ota/ble_ota.py",
+                )
+            except ModuleNotFoundError as err:
+                self.fail(f"local Bluetooth import required ESPHome: {err}")
+            with (
+                patch.object(
+                    local_ble, "async_ble_device_from_address", return_value=object()
+                ),
+                patch.object(local_ble, "BleakClient", return_value=fake),
+            ):
+                await local_ble.async_request_ota(object(), "AA:BB:CC:DD:EE:FF")
+
+        self.assertEqual(fake.writes[0][1], bytes.fromhex("8800A55A4F54"))
+
     async def test_wake_uses_plain_client_exact_frame_and_status(self):
         fake = FakeClient()
         classes = []
@@ -246,6 +334,156 @@ class RemoteOtaBleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(backend.clear_calls, 1)
         self.assertEqual(fake.preconnect_clear_calls, 0)
         self.assertEqual(fake.writes[0][0].handle, 16)
+
+    async def test_wake_fallback_rejects_failed_remote_clear(self):
+        normal_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=16)
+        ota_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=52)
+        normal_services = [types.SimpleNamespace(characteristics=[normal_char])]
+        ota_services = [types.SimpleNamespace(characteristics=[ota_char])]
+        backend = FakeEsphomeBackend(normal_services, ota_services)
+        backend.clear_result = False
+        fake = FakeHaWrapperClient(backend, expected_handle=16)
+
+        with (
+            patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
+            patch.object(ble_ota, "BleakClient", return_value=fake),
+        ):
+            with self.assertRaisesRegex(ble_ota.OtaError, "缓存"):
+                await ble_ota.async_request_ota(object(), "AA:BB:CC:DD:EE:FF")
+
+        self.assertEqual(len(fake.connect_calls), 1)
+        self.assertEqual(fake.writes, [])
+
+    async def test_wake_preclears_all_esphome_proxies_and_connects_once(self):
+        normal_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=16)
+        ota_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=52)
+        normal_services = [types.SimpleNamespace(characteristics=[normal_char])]
+        ota_services = [types.SimpleNamespace(characteristics=[ota_char])]
+        selected = FakeEsphomeBackend(normal_services, ota_services)
+        other = FakeEsphomeBackend(normal_services, ota_services)
+        selected_path, selected_cache, selected_api = _esphome_path(
+            selected, "proxy-a"
+        )
+        other_path, other_cache, other_api = _esphome_path(other, "proxy-b")
+        fake = FakeHaWrapperClient(selected, expected_handle=16)
+
+        with (
+            patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
+            patch.object(ble_ota, "BleakClient", return_value=fake),
+            patch.object(
+                ble_ota,
+                "async_scanner_devices_by_address",
+                return_value=[selected_path, other_path],
+                create=True,
+            ),
+        ):
+            await ble_ota.async_request_ota(object(), "AA:BB:CC:DD:EE:FF")
+
+        self.assertEqual(len(fake.connect_calls), 1)
+        self.assertEqual(selected.clear_calls, 0)
+        self.assertEqual(selected_cache.clear_calls, 1)
+        self.assertEqual(other_cache.clear_calls, 1)
+        self.assertEqual(len(selected_api.calls), 1)
+        self.assertEqual(len(other_api.calls), 1)
+        self.assertEqual(fake.writes[0][0].handle, 16)
+
+    async def test_wake_proxy_clear_failure_prevents_connection(self):
+        normal_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=16)
+        normal_services = [types.SimpleNamespace(characteristics=[normal_char])]
+        backend = FakeEsphomeBackend(normal_services, normal_services)
+        path, _cache, api = _esphome_path(backend, "proxy-a")
+        api.error = BleakError("rpc unavailable")
+        fake = FakeHaWrapperClient(backend, expected_handle=16)
+
+        with (
+            patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
+            patch.object(ble_ota, "BleakClient", return_value=fake),
+            patch.object(
+                ble_ota,
+                "async_scanner_devices_by_address",
+                return_value=[path],
+                create=True,
+            ),
+        ):
+            with self.assertRaisesRegex(ble_ota.OtaError, "proxy-a"):
+                await ble_ota.async_request_ota(object(), "AA:BB:CC:DD:EE:FF")
+
+        self.assertEqual(fake.connect_calls, [])
+        self.assertEqual(fake.writes, [])
+
+    async def test_wake_preconnect_proxy_clear_timeout_is_bounded(self):
+        normal_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=16)
+        normal_services = [types.SimpleNamespace(characteristics=[normal_char])]
+        backend = FakeEsphomeBackend(normal_services, normal_services)
+        path, _cache, api = _esphome_path(backend, "proxy-a")
+        api.gate = asyncio.Event()
+        fake = FakeHaWrapperClient(backend, expected_handle=16)
+
+        with (
+            patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
+            patch.object(ble_ota, "BleakClient", return_value=fake),
+            patch.object(
+                ble_ota,
+                "async_scanner_devices_by_address",
+                return_value=[path],
+                create=True,
+            ),
+        ):
+            with self.assertRaisesRegex(ble_ota.OtaError, "超时"):
+                await asyncio.wait_for(
+                    ble_ota.async_request_ota(
+                        object(), "AA:BB:CC:DD:EE:FF", timeout=0.02
+                    ),
+                    timeout=0.1,
+                )
+
+        self.assertEqual(fake.connect_calls, [])
+
+    async def test_wake_proxy_without_remote_clear_still_preclears_host(self):
+        normal_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=16)
+        ota_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=52)
+        normal_services = [types.SimpleNamespace(characteristics=[normal_char])]
+        ota_services = [types.SimpleNamespace(characteristics=[ota_char])]
+        backend = FakeEsphomeBackend(normal_services, ota_services)
+        path, cache, api = _esphome_path(backend, "proxy-a", feature_flags=0)
+        fake = FakeHaWrapperClient(backend, expected_handle=16)
+
+        with (
+            patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
+            patch.object(ble_ota, "BleakClient", return_value=fake),
+            patch.object(
+                ble_ota,
+                "async_scanner_devices_by_address",
+                return_value=[path],
+                create=True,
+            ),
+        ):
+            await ble_ota.async_request_ota(object(), "AA:BB:CC:DD:EE:FF")
+
+        self.assertEqual(len(fake.connect_calls), 1)
+        self.assertEqual(cache.clear_calls, 1)
+        self.assertEqual(api.calls, [])
+        self.assertEqual(fake.writes[0][0].handle, 16)
+
+    async def test_wake_attempt_is_capped_to_single_broadcast_cycle(self):
+        fake = FakeClient()
+
+        async def blocking_connect(**kwargs):
+            fake.connect_calls.append(kwargs)
+            await asyncio.Event().wait()
+
+        fake.connect = blocking_connect
+        with (
+            patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
+            patch.object(ble_ota, "BleakClient", return_value=fake),
+            patch.object(ble_ota, "REMOTE_OTA_CONNECT_TIMEOUT", 0.02),
+        ):
+            with self.assertRaisesRegex(ble_ota.OtaError, "连接超时"):
+                await ble_ota.async_request_ota(
+                    object(), "AA:BB:CC:DD:EE:FF", timeout=1.0
+                )
+
+        self.assertLessEqual(fake.connect_calls[0]["timeout"], 0.02)
 
     async def test_wake_reconnect_requires_confirmed_disconnect(self):
         normal_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=16)
@@ -375,6 +613,120 @@ class RemoteOtaBleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(ble_ota, "establish_connection", connect),
         ):
             await client.async_run()
+
+    async def test_fresh_config_preclears_proxy_and_connects_once(self):
+        normal_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=16)
+        ota_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=52)
+        normal_services = [types.SimpleNamespace(characteristics=[normal_char])]
+        ota_services = [types.SimpleNamespace(characteristics=[ota_char])]
+        backend = FakeEsphomeBackend(ota_services, normal_services)
+        path, cache, api = _esphome_path(backend, "proxy-a")
+        fake = FakeHaWrapperClient(backend, expected_handle=52)
+        connect_calls = []
+
+        async def connect(client_class, *args, **kwargs):
+            connect_calls.append(kwargs)
+            await fake.connect(**kwargs)
+            return fake
+
+        with (
+            patch.object(ble_ota, "establish_connection", connect),
+            patch.object(
+                ble_ota,
+                "async_scanner_devices_by_address",
+                return_value=[path],
+                create=True,
+            ),
+        ):
+            await ble_ota.async_set_threshold(
+                object(), "AA:BB:CC:DD:EE:FF", 165, fresh_services=True
+            )
+
+        self.assertEqual(len(connect_calls), 1)
+        self.assertEqual(backend.clear_calls, 0)
+        self.assertEqual(cache.clear_calls, 1)
+        self.assertEqual(len(api.calls), 1)
+        self.assertEqual(fake.writes[0][0].handle, 52)
+
+    async def test_fresh_config_fallback_rejects_failed_remote_clear(self):
+        normal_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=16)
+        ota_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=52)
+        normal_services = [types.SimpleNamespace(characteristics=[normal_char])]
+        ota_services = [types.SimpleNamespace(characteristics=[ota_char])]
+        backend = FakeEsphomeBackend(ota_services, normal_services)
+        backend.clear_result = False
+        fake = FakeHaWrapperClient(backend, expected_handle=52)
+        connect_calls = []
+
+        async def connect(client_class, *args, **kwargs):
+            connect_calls.append(kwargs)
+            await fake.connect(**kwargs)
+            return fake
+
+        with patch.object(ble_ota, "establish_connection", connect):
+            with self.assertRaisesRegex(ble_ota.OtaError, "缓存"):
+                await ble_ota.async_set_threshold(
+                    object(), "AA:BB:CC:DD:EE:FF", 165, fresh_services=True
+                )
+
+        self.assertEqual(len(connect_calls), 1)
+        self.assertEqual(fake.writes, [])
+
+    async def test_fresh_upload_preclears_proxy_and_connects_once(self):
+        normal_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=16)
+        ota_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=52)
+        normal_services = [types.SimpleNamespace(characteristics=[normal_char])]
+        ota_services = [types.SimpleNamespace(characteristics=[ota_char])]
+        backend = FakeEsphomeBackend(ota_services, normal_services)
+        path, cache, api = _esphome_path(backend, "proxy-a")
+        fake = FakeHaWrapperClient(backend, expected_handle=52)
+        connect_calls = []
+
+        async def connect(client_class, *args, **kwargs):
+            self.assertIs(kwargs["use_services_cache"], False)
+            connect_calls.append(kwargs)
+            await fake.connect(**kwargs)
+            return fake
+
+        client = ble_ota.Ch592OtaClient(
+            object(),
+            "AA:BB:CC:DD:EE:FF",
+            b"\x6f\x00\x00\x00",
+            lambda *args: None,
+            fresh_services=True,
+        )
+        client._find_ota_char = lambda: fake.char
+        client._async_info = AsyncMock(
+            return_value={
+                "features": const.OTA_FEATURE_PAGE_SPLIT,
+                "image_size": const.IMAGE_SIZE,
+                "block_size": const.FLASH_BLOCK_SIZE,
+                "protocol": 8,
+                "vdd": 3000,
+            }
+        )
+        client._async_erase = AsyncMock()
+        client._async_program = AsyncMock()
+        client._async_crc32_verify = AsyncMock()
+        client._async_verify = AsyncMock()
+        client._async_end = AsyncMock()
+        with (
+            patch.object(ble_ota, "async_ble_device_from_address", return_value=object()),
+            patch.object(ble_ota, "establish_connection", connect),
+            patch.object(
+                ble_ota,
+                "async_scanner_devices_by_address",
+                return_value=[path],
+                create=True,
+            ),
+        ):
+            await client.async_run()
+
+        self.assertEqual(len(connect_calls), 1)
+        self.assertEqual(backend.clear_calls, 0)
+        self.assertEqual(cache.clear_calls, 1)
+        self.assertEqual(len(api.calls), 1)
+        self.assertEqual(fake.services[0].characteristics[0].handle, 52)
 
     async def test_fresh_upload_reconnects_after_clearing_normal_service_cache(self):
         normal_char = types.SimpleNamespace(uuid=const.OTA_CHAR_UUID, handle=16)

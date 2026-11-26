@@ -25,7 +25,10 @@ from collections.abc import Callable
 from bleak import BleakClient
 from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
-from homeassistant.components.bluetooth import async_ble_device_from_address
+from homeassistant.components.bluetooth import (
+    async_ble_device_from_address,
+    async_scanner_devices_by_address,
+)
 from homeassistant.core import HomeAssistant
 
 from .const import (
@@ -99,15 +102,88 @@ def _find_ota_char(client: BleakClient):
     raise OtaError("设备上没有找到 OTA 特征值，请确认已进入 OTA 模式")
 
 
+async def _async_clear_esphome_caches(
+    hass: HomeAssistant, address: str, deadline: float
+) -> set[int]:
+    """Clear every visible ESPHome path before its first connection."""
+    loop = asyncio.get_running_loop()
+    address_as_int = int(address.replace(":", ""), 16)
+    cleared_caches: set[int] = set()
+    remote_clears = []
+
+    # Clear all host caches synchronously before awaiting any proxy RPC. HA's
+    # connector factory is a partial(ESPHomeClient, client_data=...), which
+    # remains available even though HaBleakClientWrapper._backend is still None.
+    for discovered in async_scanner_devices_by_address(
+        hass, address, connectable=True
+    ):
+        connector = getattr(discovered.scanner, "connector", None)
+        factory = getattr(connector, "client", None)
+        client_data = getattr(factory, "keywords", {}).get("client_data")
+        cache = getattr(
+            getattr(client_data, "bluetooth_device", None), "cache", None
+        )
+        api = getattr(client_data, "client", None)
+        clear_remote = getattr(api, "bluetooth_device_clear_cache", None)
+        if (
+            client_data is None
+            or cache is None
+            or clear_remote is None
+            or id(cache) in cleared_caches
+        ):
+            continue
+        cache.clear_gatt_services_cache(address_as_int)
+        cache.clear_gatt_mtu_cache(address_as_int)
+        cleared_caches.add(id(cache))
+        # aioesphomeapi is installed by HA's ESPHome integration, not by this
+        # integration. Local BlueZ users must not need it merely to import us.
+        from aioesphomeapi import BluetoothProxyFeature
+
+        feature_flags = client_data.device_info.bluetooth_proxy_feature_flags_compat(
+            client_data.api_version
+        )
+        if feature_flags & BluetoothProxyFeature.CACHE_CLEARING:
+            remote_clears.append((connector.source, clear_remote))
+
+    for source, clear_remote in remote_clears:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise OtaError(f"清理 {source} 的 GATT 缓存超时")
+        try:
+            response = await asyncio.wait_for(
+                clear_remote(address_as_int, timeout=min(30.0, remaining)),
+                remaining,
+            )
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError as err:
+            raise OtaError(f"清理 {source} 的 GATT 缓存超时") from err
+        except Exception as err:  # aioesphomeapi has several transport errors
+            detail = str(err) or type(err).__name__
+            raise OtaError(f"清理 {source} 的 GATT 缓存失败: {detail}") from err
+        if not response.success:
+            raise OtaError(
+                f"清理 {source} 的 GATT 缓存失败: "
+                f"{getattr(response, 'error', '未知错误')}"
+            )
+
+    return cleared_caches
+
+
 async def _async_establish_ota_connection(
     device,
     address: str,
     fresh_services: bool = False,
     on_client: Callable[[BleakClient], None] | None = None,
+    hass: HomeAssistant | None = None,
 ) -> BleakClient:
     """Connect for OTA, forcing fresh handles after a firmware mode switch."""
     client_class = BleakClient if fresh_services else BleakClientWithServiceCache
     cleared_caches: set[int] = set()
+    if fresh_services and hass is not None:
+        cleared_caches = await _async_clear_esphome_caches(
+            hass, address, asyncio.get_running_loop().time() + 30.0
+        )
     while True:
         client = await establish_connection(
             client_class,
@@ -198,6 +274,7 @@ class Ch592OtaClient:
                 self._address,
                 fresh_services=self._fresh_services,
                 on_client=track_client,
+                hass=self._hass,
             )
             self._char = self._find_ota_char()
             requested = (
@@ -575,7 +652,9 @@ async def _async_clear_connected_service_cache(
     if timeout <= 0:
         raise TimeoutError
     try:
-        await asyncio.wait_for(clear_cache(), timeout)
+        cleared = await asyncio.wait_for(clear_cache(), timeout)
+        if cleared is False:
+            raise OtaError("ESPHome 代理清理 GATT 缓存失败")
     except BleakError as err:
         # ESPHome has already cleared its host cache if the device drops while
         # the proxy-side clear is requested; reconnecting still forces discovery.
@@ -619,11 +698,11 @@ async def _async_connect_normal(
     """Connect directly with a real per-call timeout and bounded transient retries."""
     loop = asyncio.get_running_loop()
     last_error: Exception | None = None
-    cleared_caches: set[int] = set()
+    cleared_caches = await _async_clear_esphome_caches(hass, address, deadline)
     while True:
         remaining = deadline - loop.time()
         if remaining <= 0:
-            detail = str(last_error) if last_error else "连接超时"
+            detail = (str(last_error) or "连接超时") if last_error else "连接超时"
             raise OtaError(f"普通模式唤醒连接失败: {detail}") from last_error
 
         device = async_ble_device_from_address(hass, address, connectable=True)
@@ -679,7 +758,7 @@ async def async_request_ota(
     the coordinator still requires a fresh OTA advertisement before uploading.
     """
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + max(0.0, timeout)
+    deadline = loop.time() + min(max(0.0, timeout), REMOTE_OTA_CONNECT_TIMEOUT)
     client: BleakClient | None = None
 
     def track_client(connected_client: BleakClient) -> None:
@@ -804,6 +883,7 @@ async def _async_write_config(
             address,
             fresh_services=fresh_services,
             on_client=track_client,
+            hass=hass,
         )
         ota_char = None
         for service in client.services or []:

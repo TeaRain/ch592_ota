@@ -40,7 +40,11 @@ _module(
 )
 _module("homeassistant")
 _module("homeassistant.components")
-_module("homeassistant.components.bluetooth", async_ble_device_from_address=lambda *args: object())
+_module(
+    "homeassistant.components.bluetooth",
+    async_ble_device_from_address=lambda *args: object(),
+    async_scanner_devices_by_address=lambda *args, **kwargs: [],
+)
 _module("homeassistant.core", HomeAssistant=object)
 package = _module(PACKAGE)
 package.__path__ = [str(REPO / "custom_components/ch592_ota")]
