@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Mirror Gitee and publish 0.8.1
+      - name: Mirror Gitee and publish 0.8.2
         run: |
           set -euo pipefail
           cloned=false
@@ -32,7 +32,7 @@ jobs:
           git add -A
           if ! git diff --cached --quiet; then
             version=$(jq -er '.version' custom_components/ch592_ota/manifest.json)
-            git commit -m "release: CH592 OTA integration ${version}" -m "Co-Authored-By: Claude Code <noreply@anthropic.com>"
+            git commit -m "release: CH592 OTA integration ${version}" -m "Co-Authored-By: Kimi Code <noreply@anthropic.com>"
             if ! git push origin master; then
               git pull --rebase origin master
               git push origin master
