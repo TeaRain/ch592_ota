@@ -47,7 +47,7 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 - 命令：`0x80` PROGRAM、`0x81` ERASE、`0x82` VERIFY、`0x83` END、`0x84` INFO、
   `0x85` CRC32（1.3.0 起）、`0x86` 写燃气值（1.4.7 起停用）、`0x87` 写采样阈值；
   `0x88` 仅用于普通模式请求进入 OTA
-- `END` 后切换 ImageFlag 并复位，IAP 把 Image B 拷到 Image A
+- `END` 后切换 ImageFlag 并复位，IAP 把 Image B 拷贝到 Image A
 
 **集成端**
 
