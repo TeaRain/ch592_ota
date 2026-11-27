@@ -29,14 +29,3 @@ jobs:
             echo "creating release $tag"
             gh release create "$tag" --title "$tag" --generate-notes
           done
-
-      - name: Release the integration manifest version
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          version=$(jq -er '.version' custom_components/ch592_ota/manifest.json)
-          tag="v${version}"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --target master --title "CH592 OTA ${version}" --generate-notes
-          fi
