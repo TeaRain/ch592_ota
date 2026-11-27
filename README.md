@@ -1,22 +1,23 @@
-# CH592 OTA
+# GasPulse 蓝牙燃气表
 
 Home Assistant 自定义集成：通过 Home Assistant 的蓝牙代理（ESPHome Bluetooth
-Proxy）在线升级 **CH592 BLE 燃气表广播器**（WCH BackupUpgrade / OTA）。
+Proxy）采集和管理 **GasPulse 蓝牙燃气表**（CH592 硬件，WCH BackupUpgrade / OTA）。
 
 设备端用 WCH 备份升级方案：OTA 镜像写入 Image B，校验通过后 IAP 在重启时拷贝到
 Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2 文本对象 `0x53`
 广播，升级完成后 HA 里能直接看到新版本。
 
-- 集成仓库：https://gitee.com/zigbridge/ch592_ota ｜ https://github.com/TeaRain/ch592_ota
+- HACS / GitHub 集成仓库：https://github.com/TeaRain/ch592_ota
+- Gitee 代码备份：https://gitee.com/zigbridge/ch592_ota（不用添加到 HACS）
 - 固件仓库：https://gitee.com/zigbridge/ch592-gas-broadcaster ｜ https://github.com/TeaRain/ch592-gas-broadcaster
 
 ## 当前版本与历史实测
 
-> 1.6.2 / 0.8.4 已完成自动化测试；0.8.2 实机改为一次唤醒占满 240 秒并记录空错误。0.8.3 在首次连接前清理 ESPHome 缓存、恢复单次 65 秒期限，仍待实机复测。
+> 当前为 **0.9.0 品牌桥接版**：只改对外名称和仓库兼容逻辑，HA domain、集成目录、服务、实体 ID 与 OTA 协议均不变。后续仓库将改用 `gaspulse-ha` / `gaspulse-firmware`，旧固件下载地址在兼容期内继续保留。
 
 | 项目 | 值 |
 |------|-----|
-| 集成版本 | **0.8.4** |
+| 集成版本 | **0.9.0** |
 | 固件版本 | **1.6.2** |
 | 一次升级耗时 | 免按键新增普通窗口等待；上传仍用协议 8 单次 CRC32，实际总耗时尚待实机记录 |
 | 供电实测 | CR2032 新电池，OTA 负载下 **3.04 V**，全程无下探 |
@@ -73,9 +74,10 @@ HACS 只识别 GitHub 仓库：
 
 1. HACS → 右上角 ⋮ → **自定义仓库**；
 2. 添加 `https://github.com/TeaRain/ch592_ota`，类型选 **集成（Integration）**；
-3. 搜索 “CH592 OTA” 安装，然后重启 HA。
+3. 搜索 “GasPulse 蓝牙燃气表” 安装，然后重启 HA。
 
-Gitee 主仓库需要手动安装（见方式二/三）。
+**HACS 自定义仓库只填写 GitHub。** Gitee 仅作代码备份和固件清单/BIN 下载回退；
+手动安装也可以使用 Gitee 备份（见方式二/三），但它不是 HACS 来源。
 
 ### 方式二：git clone
 
@@ -94,7 +96,14 @@ rm -rf /tmp/ch592_ota_repo
 
 解压后把 `custom_components/ch592_ota` 复制到 `/config/custom_components/`。
 
-装好之后：**设置 → 设备与服务 → 添加集成 → 搜索 “CH592 OTA”**。
+### 0.8.x 老用户升级到 0.9.0
+
+- 在 GitHub HACS 中正常更新即可；**不要删除集成、设备或配置条目**，已有实体 ID、历史数据和自动化不需要修改。
+- 如果后续仓库改名后旧 HACS 来源无法更新，只把自定义仓库地址替换为 `https://github.com/TeaRain/gaspulse-ha` 并重新下载；不要卸载已有配置。
+- 手动安装仍覆盖 `/config/custom_components/ch592_ota/`。该目录和 `ch592_ota.*` 服务是兼容标识，请勿自行改成 `gaspulse`。
+- Gitee 不需要添加到 HACS；旧 Gitee 固件 raw 地址由集成自动用于回退。
+
+装好之后：**设置 → 设备与服务 → 添加集成 → 搜索 “GasPulse 蓝牙燃气表”**。
 
 需要 HA 的 `bluetooth` 集成，以及可连接的 ESPHome 代理：
 
@@ -135,15 +144,15 @@ bluetooth_proxy:
 
 ### 固件自动检查
 
-集成默认每 30 分钟拉取固件清单（Gitee → GitHub 兜底）：
-
-```
-https://gitee.com/zigbridge/ch592-gas-broadcaster/raw/master/firmware/manifest.json
-```
+集成默认每 30 分钟拉取固件清单。0.9.0 桥接版依次认识旧 Gitee、旧 GitHub和后续
+新 Gitee、新 GitHub 四个内置地址，当前旧地址优先，新仓库开通后由后续版本切换优先级。
+曾手动填写过项目内置旧地址的安装也会自动使用完整回退列表；其他自定义 URL 不变。
 
 清单里有 `version`、`size`、`crc32`、`sha256`、`file`、`notes`。发现新版本时
-`update.*` 自动变成「有更新」，安装时下载镜像并校验大小 / CRC32 / SHA-256，
-**不需要本地放固件文件**。想立刻检查：按 `button.*_check_for_updates`。
+`update.*` 自动变成「有更新」。安装时如果某一镜像的 BIN 下载失败或校验不符，
+集成会使用**同一份清单的版本、大小、CRC32 和 SHA-256**尝试下一镜像，不会改刷
+另一份未核验固件。**不需要本地放固件文件**。想立刻检查：按
+`button.*_check_for_updates`。
 
 ## 升级
 

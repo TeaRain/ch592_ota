@@ -103,7 +103,7 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload one CH592 device."""
+    """Unload a config entry."""
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
     coordinator = getattr(entry, "runtime_data", None)
