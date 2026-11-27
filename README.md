@@ -7,18 +7,17 @@ Proxy）采集和管理 **GasPulse 蓝牙燃气表**（CH592 硬件，WCH Backup
 Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2 文本对象 `0x53`
 广播，升级完成后 HA 里能直接看到新版本。
 
-- HACS / GitHub 集成仓库：https://github.com/TeaRain/gaspulse-ha
-- Gitee 代码备份：https://gitee.com/zigbridge/gaspulse-ha（仅备份，不用添加到 HACS）
-- 固件仓库：https://github.com/TeaRain/gaspulse-firmware ｜ Gitee 备份：https://gitee.com/zigbridge/gaspulse-firmware
-- 旧 GitHub 地址由平台重定向，旧 Gitee raw 固件地址在兼容期内继续保留
+- HACS / GitHub 集成仓库：https://github.com/TeaRain/ch592_ota
+- Gitee 代码备份：https://gitee.com/zigbridge/ch592_ota（不用添加到 HACS）
+- 固件仓库：https://gitee.com/zigbridge/ch592-gas-broadcaster ｜ https://github.com/TeaRain/ch592-gas-broadcaster
 
 ## 当前版本与历史实测
 
-> 当前为 **0.9.1 新地址优先版**：GitHub 已改用 `gaspulse-ha` / `gaspulse-firmware`，旧地址保留重定向和固件回退。HA domain、集成目录、服务、实体 ID 与 OTA 协议均不变。
+> 当前为 **0.9.0 品牌桥接版**：只改对外名称和仓库兼容逻辑，HA domain、集成目录、服务、实体 ID 与 OTA 协议均不变。后续仓库将改用 `gaspulse-ha` / `gaspulse-firmware`，旧固件下载地址在兼容期内继续保留。
 
 | 项目 | 值 |
 |------|-----|
-| 集成版本 | **0.9.1** |
+| 集成版本 | **0.9.0** |
 | 固件版本 | **1.6.2** |
 | 一次升级耗时 | 免按键新增普通窗口等待；上传仍用协议 8 单次 CRC32，实际总耗时尚待实机记录 |
 | 供电实测 | CR2032 新电池，OTA 负载下 **3.04 V**，全程无下探 |
@@ -48,7 +47,7 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 - 命令：`0x80` PROGRAM、`0x81` ERASE、`0x82` VERIFY、`0x83` END、`0x84` INFO、
   `0x85` CRC32（1.3.0 起）、`0x86` 写燃气值（1.4.7 起停用）、`0x87` 写采样阈值；
   `0x88` 仅用于普通模式请求进入 OTA
-- `END` 后切换 ImageFlag 并复位，IAP 把 Image B 拷贝到 Image A
+- `END` 后切换 ImageFlag 并复位，IAP 把 Image B 拷到 Image A
 
 **集成端**
 
@@ -74,7 +73,7 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 HACS 只识别 GitHub 仓库：
 
 1. HACS → 右上角 ⋮ → **自定义仓库**；
-2. 添加 `https://github.com/TeaRain/gaspulse-ha`，类型选 **集成（Integration）**；
+2. 添加 `https://github.com/TeaRain/ch592_ota`，类型选 **集成（Integration）**；
 3. 搜索 “GasPulse 蓝牙燃气表” 安装，然后重启 HA。
 
 **HACS 自定义仓库只填写 GitHub。** Gitee 仅作代码备份和固件清单/BIN 下载回退；
@@ -86,22 +85,21 @@ HACS 只识别 GitHub 仓库：
 cd /config
 rm -rf /tmp/ch592_ota_repo
 git clone --depth 1 https://gitee.com/zigbridge/ch592_ota.git /tmp/ch592_ota_repo
-# 旧 Gitee HA 备份当前冻结于 0.9.0；新 Gitee 备份公开后改用 zigbridge/gaspulse-ha
 cp -rf /tmp/ch592_ota_repo/custom_components/ch592_ota /config/custom_components/
 rm -rf /tmp/ch592_ota_repo
 ```
 
 ### 方式三：下载 ZIP
 
-- Gitee（旧备份，当前冻结于 0.9.0；新备份公开后改用 `gaspulse-ha`）：`https://gitee.com/zigbridge/ch592_ota/repository/archive/master.zip`
-- GitHub：`https://github.com/TeaRain/gaspulse-ha/archive/refs/heads/master.zip`
+- Gitee：`https://gitee.com/zigbridge/ch592_ota/repository/archive/master.zip`
+- GitHub：`https://github.com/TeaRain/ch592_ota/archive/refs/heads/master.zip`
 
 解压后把 `custom_components/ch592_ota` 复制到 `/config/custom_components/`。
 
-### 0.8.x / 0.9.0 老用户升级到当前版本
+### 0.8.x 老用户升级到 0.9.0
 
 - 在 GitHub HACS 中正常更新即可；**不要删除集成、设备或配置条目**，已有实体 ID、历史数据和自动化不需要修改。
-- 如果旧 HACS 来源因缓存不跟随 GitHub 重定向而无法更新，把自定义仓库地址替换为 `https://github.com/TeaRain/gaspulse-ha` 并重新下载；不要卸载已有配置。
+- 如果后续仓库改名后旧 HACS 来源无法更新，只把自定义仓库地址替换为 `https://github.com/TeaRain/gaspulse-ha` 并重新下载；不要卸载已有配置。
 - 手动安装仍覆盖 `/config/custom_components/ch592_ota/`。该目录和 `ch592_ota.*` 服务是兼容标识，请勿自行改成 `gaspulse`。
 - Gitee 不需要添加到 HACS；旧 Gitee 固件 raw 地址由集成自动用于回退。
 
@@ -146,9 +144,9 @@ bluetooth_proxy:
 
 ### 固件自动检查
 
-集成默认每 30 分钟拉取固件清单。0.9.1 起依次使用新 GitHub、新 Gitee、旧 Gitee 和旧 GitHub；
-GitHub 是主入口，Gitee 是备份。曾手动填写过项目内置旧地址的安装也会自动使用完整回退列表；
-其他自定义 URL 不变。
+集成默认每 30 分钟拉取固件清单。0.9.0 桥接版依次认识旧 Gitee、旧 GitHub和后续
+新 Gitee、新 GitHub 四个内置地址，当前旧地址优先，新仓库开通后由后续版本切换优先级。
+曾手动填写过项目内置旧地址的安装也会自动使用完整回退列表；其他自定义 URL 不变。
 
 清单里有 `version`、`size`、`crc32`、`sha256`、`file`、`notes`。发现新版本时
 `update.*` 自动变成「有更新」。安装时如果某一镜像的 BIN 下载失败或校验不符，
