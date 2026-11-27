@@ -29,7 +29,7 @@ NEW_GITHUB = (
     "https://raw.githubusercontent.com/TeaRain/gaspulse-firmware"
     "/master/firmware/manifest.json"
 )
-MANIFEST_URLS = [NEW_GITHUB, NEW_GITEE, OLD_GITEE, OLD_GITHUB]
+MANIFEST_URLS = [OLD_GITEE, OLD_GITHUB, NEW_GITEE, NEW_GITHUB]
 
 
 def _module(name, **attributes):
@@ -125,7 +125,7 @@ class FakeSession:
 
     def get(self, url):
         self.requests.append(url)
-        response = self.responses.get(url, FakeResponse(status=404))
+        response = self.responses[url]
         if isinstance(response, Exception):
             raise response
         return response
@@ -158,9 +158,9 @@ class FirmwareMigrationTests(unittest.TestCase):
     def test_build_download_urls_puts_selected_mirror_first(self):
         expected = [
             OLD_GITHUB.rsplit("/", 1)[0] + "/ch592_ota.bin",
-            NEW_GITHUB.rsplit("/", 1)[0] + "/ch592_ota.bin",
-            NEW_GITEE.rsplit("/", 1)[0] + "/ch592_ota.bin",
             OLD_GITEE.rsplit("/", 1)[0] + "/ch592_ota.bin",
+            NEW_GITEE.rsplit("/", 1)[0] + "/ch592_ota.bin",
+            NEW_GITHUB.rsplit("/", 1)[0] + "/ch592_ota.bin",
         ]
         self.assertEqual(
             FIRMWARE.build_download_urls(

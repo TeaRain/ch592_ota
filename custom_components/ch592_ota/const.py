@@ -26,13 +26,13 @@ LEGACY_MANIFEST_URLS = (
     "/master/firmware/manifest.json",
 )
 NEW_MANIFEST_URLS = (
-    "https://raw.githubusercontent.com/TeaRain/gaspulse-firmware"
-    "/master/firmware/manifest.json",
     "https://gitee.com/zigbridge/gaspulse-firmware"
     "/raw/master/firmware/manifest.json",
+    "https://raw.githubusercontent.com/TeaRain/gaspulse-firmware"
+    "/master/firmware/manifest.json",
 )
 KNOWN_MANIFEST_URLS = frozenset(LEGACY_MANIFEST_URLS + NEW_MANIFEST_URLS)
-DEFAULT_MANIFEST_URLS = NEW_MANIFEST_URLS + LEGACY_MANIFEST_URLS
+DEFAULT_MANIFEST_URLS = LEGACY_MANIFEST_URLS + NEW_MANIFEST_URLS
 DEFAULT_MANIFEST_URL = DEFAULT_MANIFEST_URLS[0]
 MANIFEST_UPDATE_INTERVAL_MINUTES = 30
 
