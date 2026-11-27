@@ -7,17 +7,18 @@ Proxy）采集和管理 **GasPulse 蓝牙燃气表**（CH592 硬件，WCH Backup
 Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2 文本对象 `0x53`
 广播，升级完成后 HA 里能直接看到新版本。
 
-- HACS / GitHub 集成仓库：https://github.com/TeaRain/ch592_ota
-- Gitee 代码备份：https://gitee.com/zigbridge/ch592_ota（不用添加到 HACS）
-- 固件仓库：https://gitee.com/zigbridge/ch592-gas-broadcaster ｜ https://github.com/TeaRain/ch592-gas-broadcaster
+- HACS / GitHub 集成仓库：https://github.com/TeaRain/gaspulse-ha
+- Gitee 代码备份：https://gitee.com/zigbridge/gaspulse-ha（仅备份，不用添加到 HACS）
+- 固件仓库：https://github.com/TeaRain/gaspulse-firmware ｜ Gitee 备份：https://gitee.com/zigbridge/gaspulse-firmware
+- 旧 GitHub 地址由平台重定向，旧 Gitee raw 固件地址在兼容期内继续保留
 
 ## 当前版本与历史实测
 
-> 当前为 **0.9.0 品牌桥接版**：只改对外名称和仓库兼容逻辑，HA domain、集成目录、服务、实体 ID 与 OTA 协议均不变。后续仓库将改用 `gaspulse-ha` / `gaspulse-firmware`，旧固件下载地址在兼容期内继续保留。
+> 当前为 **0.9.1 新地址优先版**：GitHub 已改用 `gaspulse-ha` / `gaspulse-firmware`，旧地址保留重定向和固件回退。HA domain、集成目录、服务、实体 ID 与 OTA 协议均不变。
 
 | 项目 | 值 |
 |------|-----|
-| 集成版本 | **0.9.0** |
+| 集成版本 | **0.9.1** |
 | 固件版本 | **1.6.2** |
 | 一次升级耗时 | 免按键新增普通窗口等待；上传仍用协议 8 单次 CRC32，实际总耗时尚待实机记录 |
 | 供电实测 | CR2032 新电池，OTA 负载下 **3.04 V**，全程无下探 |
@@ -34,27 +35,21 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 - 0.8.3 普通唤醒在真实 `client.connect()` 上恢复每次最长 **65 秒**期限，立即失败时在同一窗口内退避重试，覆盖下一分钟广播；协调器同时用 240 秒总剩余期限约束整个唤醒过程。正式上传连接参数仍为 30 秒。
 - 0.8.3 在首次连接前通过真实 ESPHome connector 清理所有可见代理的旧 GATT 缓存，再以无缓存连接重新发现服务；普通 `0xFEE1` 句柄 16 与 OTA 句柄 52 不混用。未识别的连接路径保留连接后清缓存回退，代理明确清缓存失败会停止写入。
 - `升级状态` 提供 `wake_attempts` 和 `wake_error`，最终超时同时显示次数和最后实际错误。
-- 普通 GATT 只接受固定 `0x88 ENTER_OTA` 帧，设备写现有 OTA 请求、应答后复位；
-  不开放普通模式 ERASE/PROGRAM/END，也不改变 IAP。
+- 普通 GATT 只接受固定 `0x88 ENTER_OTA` 帧，设备写现有 OTA 请求、应答后复位；不开放普通模式 ERASE/PROGRAM/END，也不改变 IAP。
 - 收到新的 OTA 广播后预清缓存，以无缓存连接重新发现 GATT，再复用原有上传；有待写阈值时仍先写阈值。
 - 普通控制连接约 5 秒超时，等待唤醒最长 240 秒，取消会终止等待；没有常驻连接。
 - 理论广播增量预算约 0.2～1 µA，**不是实测值**；Role 睡眠和主动扫描开销待测。
 
 **设备端**（`peripheral.c` 的 OTA 分支）
 
-- 长按 B 键 3 秒 → 写 DataFlash 标记 → 复位 → 启动可连接的 OTA 外设，
-  广播服务 `0xFEE0`（特征 `0xFEE1`），不再发 BTHome 广播
-- 命令：`0x80` PROGRAM、`0x81` ERASE、`0x82` VERIFY、`0x83` END、`0x84` INFO、
-  `0x85` CRC32（1.3.0 起）、`0x86` 写燃气值（1.4.7 起停用）、`0x87` 写采样阈值；
-  `0x88` 仅用于普通模式请求进入 OTA
+- 长按 B 键 3 秒 → 写 DataFlash 标记 → 复位 → 启动可连接的 OTA 外设，广播服务 `0xFEE0`（特征 `0xFEE1`），不再发 BTHome 广播
+- 命令：`0x80` PROGRAM、`0x81` ERASE、`0x82` VERIFY、`0x83` END、`0x84` INFO、`0x85` CRC32（1.3.0 起）、`0x86` 写燃气值（1.4.7 起停用）、`0x87` 写采样阈值；`0x88` 仅用于普通模式请求进入 OTA
 - `END` 后切换 ImageFlag 并复位，IAP 把 Image B 拷到 Image A
 
 **集成端**
 
-- 用 `write without response` 流式写 PROGRAM，每 32 片读一次状态
-  （以前是每片都「写 + 读」，这是原来 20 分钟的主要来源）
-- 0.7.2 恢复 0.4.0 的单次 CRC32 快速校验：固件 1.4.8 / 协议 8 使用查找表快速
-  计算；旧固件继续走有边界的逐块 VERIFY，避免阻塞式 CRC 拖断代理连接
+- 用 `write without response` 流式写 PROGRAM，每 32 片读一次状态（以前是每片都「写 + 读」，这是原来 20 分钟的主要来源）
+- 0.7.2 恢复 0.4.0 的单次 CRC32 快速校验：固件 1.4.8 / 协议 8 使用查找表快速计算；旧固件继续走有边界的逐块 VERIFY，避免阻塞式 CRC 拖断代理连接
 - 自动升级默认关闭；在配置中显式开启后，也只有当前原始 BLE 包确认为 OTA 才会自动下载并开始升级，手动点击安装不受该开关影响
 
 ## 分片规则（重要，不要随意改）
@@ -73,7 +68,7 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 HACS 只识别 GitHub 仓库：
 
 1. HACS → 右上角 ⋮ → **自定义仓库**；
-2. 添加 `https://github.com/TeaRain/ch592_ota`，类型选 **集成（Integration）**；
+2. 添加 `https://github.com/TeaRain/gaspulse-ha`，类型选 **集成（Integration）**；
 3. 搜索 “GasPulse 蓝牙燃气表” 安装，然后重启 HA。
 
 **HACS 自定义仓库只填写 GitHub。** Gitee 仅作代码备份和固件清单/BIN 下载回退；
@@ -85,21 +80,22 @@ HACS 只识别 GitHub 仓库：
 cd /config
 rm -rf /tmp/ch592_ota_repo
 git clone --depth 1 https://gitee.com/zigbridge/ch592_ota.git /tmp/ch592_ota_repo
+# 旧 Gitee HA 备份当前冻结于 0.9.0；新 Gitee 备份公开后改用 zigbridge/gaspulse-ha
 cp -rf /tmp/ch592_ota_repo/custom_components/ch592_ota /config/custom_components/
 rm -rf /tmp/ch592_ota_repo
 ```
 
 ### 方式三：下载 ZIP
 
-- Gitee：`https://gitee.com/zigbridge/ch592_ota/repository/archive/master.zip`
-- GitHub：`https://github.com/TeaRain/ch592_ota/archive/refs/heads/master.zip`
+- Gitee（旧备份，当前冻结于 0.9.0；新备份公开后改用 `gaspulse-ha`）：`https://gitee.com/zigbridge/ch592_ota/repository/archive/master.zip`
+- GitHub：`https://github.com/TeaRain/gaspulse-ha/archive/refs/heads/master.zip`
 
 解压后把 `custom_components/ch592_ota` 复制到 `/config/custom_components/`。
 
-### 0.8.x 老用户升级到 0.9.0
+### 0.8.x / 0.9.0 老用户升级到当前版本
 
 - 在 GitHub HACS 中正常更新即可；**不要删除集成、设备或配置条目**，已有实体 ID、历史数据和自动化不需要修改。
-- 如果后续仓库改名后旧 HACS 来源无法更新，只把自定义仓库地址替换为 `https://github.com/TeaRain/gaspulse-ha` 并重新下载；不要卸载已有配置。
+- 如果旧 HACS 来源因缓存不跟随 GitHub 重定向而无法更新，把自定义仓库地址替换为 `https://github.com/TeaRain/gaspulse-ha` 并重新下载；不要卸载已有配置。
 - 手动安装仍覆盖 `/config/custom_components/ch592_ota/`。该目录和 `ch592_ota.*` 服务是兼容标识，请勿自行改成 `gaspulse`。
 - Gitee 不需要添加到 HACS；旧 Gitee 固件 raw 地址由集成自动用于回退。
 
@@ -138,15 +134,16 @@ bluetooth_proxy:
 | 蓝牙地址 | `0C:3D:5E:54:BC:6F` | BTHome 设备的 MAC，大写 |
 | 设备名称 | `CH592` | 备用名称；OTA 实体会并入 BTHome 设备页 |
 | 固件路径 | `www/firmware/ch592_ota.bin` | 相对 `/config`，必须在 config 目录内 |
+
 固件路径只是**兜底**：清单能拉到就以云端为准，拉不到才用本地 `.bin`。
 只用云端升级的话，把路径留空、本地文件删掉即可（0.4.9 起不会再刷 warning）；
 要保留离线兜底路径的话，记得每次发布固件时同步覆盖本地文件，否则会变成旧镜像。
 
 ### 固件自动检查
 
-集成默认每 30 分钟拉取固件清单。0.9.0 桥接版依次认识旧 Gitee、旧 GitHub和后续
-新 Gitee、新 GitHub 四个内置地址，当前旧地址优先，新仓库开通后由后续版本切换优先级。
-曾手动填写过项目内置旧地址的安装也会自动使用完整回退列表；其他自定义 URL 不变。
+集成默认每 30 分钟拉取固件清单。0.9.1 起依次使用新 GitHub、新 Gitee、旧 Gitee 和旧 GitHub；
+GitHub 是主入口，Gitee 是备份。曾手动填写过项目内置旧地址的安装也会自动使用完整回退列表；
+其他自定义 URL 不变。
 
 清单里有 `version`、`size`、`crc32`、`sha256`、`file`、`notes`。发现新版本时
 `update.*` 自动变成「有更新」。安装时如果某一镜像的 BIN 下载失败或校验不符，
@@ -207,10 +204,8 @@ data:
 
 ### 校准
 
-1. 等收到一次普通 BTHome 广播，在 `number.*_gas_target`（显示为
-   **机械表实际读数（输入后自动校准）**）输入机械燃气表的完整真实读数；
-2. 按回车或点击输入框外提交数值即执行校准，不需要单独的写入按钮。集成计算并持久化
-   `offset = 真实表读数 - 当前 raw`，随后 `gas_total` 按有效原始增量增加。
+1. 等收到一次普通 BTHome 广播，在 `number.*_gas_target`（显示为 **机械表实际读数（输入后自动校准）**）输入机械燃气表的完整真实读数；
+2. 按回车或点击输入框外提交数值即执行校准，不需要单独的写入按钮。集成计算并持久化 `offset = 真实表读数 - 当前 raw`，随后 `gas_total` 按有效原始增量增加。
    **不需要按 B、不需要进入 OTA，也不会改写设备 DataFlash 或原始计数。**
 
 0.7.6 起删除旧 `button.*_write_gas_value` 及其注册表残留；`ch592_ota.set_gas`
@@ -224,8 +219,7 @@ data:
 - 显示当前机械表读数使用 `gas_total`；
 - Derivative 和 Utility Meter 的源使用 `gas_consumption_total`；
 - 校准只改变真实读数，不改变统计消耗，因此不会人为制造一次用气；
-- 旧广播重放、异常回退或设备计数归零时保持两个输出值，并暴露
-  `raw_reset_detected` 属性；重新校准后才允许真实读数向下变化；
+- 旧广播重放、异常回退或设备计数归零时保持两个输出值，并暴露 `raw_reset_detected` 属性；重新校准后才允许真实读数向下变化；
 - 原始计数按 uint32 自然回绕，模数为 2^32。
 
 ## 采样阈值校正（0.6.0 + 固件 1.4.1）
@@ -240,10 +234,9 @@ data:
 1. `number.*_pulse_threshold` 填目标值（20~2000，默认 100），按回车或点击输入框外提交；
 2. 不再需要单独的 HA 写入按钮：
    - 设备已在 OTA 模式 → 立即写入（写 DataFlash，**不复位**）；
-   - 不在 OTA 模式 → 持久保存为「等待 OTA 写入」，可按 B 立即触发，也可等待
-     每 3 天的定时 OTA 窗口；HA 重启不会清除待写值；
+   - 不在 OTA 模式 → 持久保存为「等待 OTA 写入」，可按 B 立即触发，也可等待每 3 天的定时 OTA 窗口；HA 重启不会清除待写值；
    - 阈值与固件升级同时存在时，**先写阈值，成功后继续同一窗口的固件升级**；
-     写入失败保留待写值和错误，本次窗口不继续升级；
+   - 写入失败保留待写值和错误，本次窗口不继续升级；
 3. 取消：`button.*_cancel_pending_writes` 或 `ch592_ota.cancel_threshold`。
 
 0.7.6 起删除旧 `button.*_write_pulse_threshold`；0.7.7 起待写值不再 15 分钟过期。
@@ -260,7 +253,7 @@ data:
 燃气真实读数只在 HA 校准，不再通过 OTA 写设备。
 
 调参方向：阈值越低越灵敏，可能把噪声计成脉冲（读数虚增）；越高越保守，可能漏计数。
-实测余量 190~460，默认 100 已经留足余量，一般只在换表型或环境变化时微调 80~300。
+实测余量 190~460，默认 100 已经留足余量，仅在换表型或环境变化时微调 80~300。
 `sensor.*_ota_status` 的 `device_threshold` 属性显示设备当前生效值。
 
 ## 从旧燃气模板迁移
@@ -289,7 +282,7 @@ data:
 | `number.<device>_pulse_threshold` | 采样阈值（提交后写入或持久等待下次 OTA；按 B 或最长等 3 天） |
 | `button.<device>_cancel_pending_writes` | 取消待写入阈值 |
 
-`sensor.<device>_ota_status` 的属性是排查问题的主要入口：
+`sensor.*_ota_status` 的属性是排查问题的主要入口：
 
 | 属性 | 含义 |
 |------|------|
@@ -314,20 +307,12 @@ data:
 
 ## 注意事项
 
-1. **设备的 OTA 时间窗**：进入 OTA 模式后，**无连接约 5 分钟**、**总时长约 15 分钟**
-   会自动复位退出。失败后重试必须**重新长按 B**。
-2. **升级期间没有 BTHome 数据**：OTA 模式下设备只广播 OTA 服务，燃气/电量停在
-   最后一次的值，这是正常的。
-3. **不要调大分片**：128 是 ESPHome 代理的安全上限；240 会退化成代理长写并在
-   中途断链。校验阶段必须保持 64。
-4. **电池**：新 CR2032 在 40 秒 OTA 负载下约 3.04 V，可用；旧电池（低于 ~2.9 V
-   静置）建议先换。`vdd_min_mv` 是最直接的判断依据（< 2.6 V 基本到极限）。
-5. **USB 烧录只擦代码区**：`firmware/Broadcaster_full.hex` 不含 DataFlash
-   （`0x70000`），用 WCH-LinkUtility 时不要选 Chip Erase / 全片擦除，否则燃气值丢失。
-6. **广播判定以当前原始包为准**：HA 会把该地址的设备名缓存成 `GasMeter OTA`，
-   普通 BTHome 广播的合并字段里也可能残留 `0xFFE0/0xFEE0` 或旧 `0xFCD2` 数据。
-   0.7.1 起优先解析原始 BLE AD 结构：当前包有 `0xFEE0` 且没有 `0xFCD2` 才是 OTA；
-   只有旧版 HA 不提供原始包时才使用合并字段兼容判断。
+1. **设备的 OTA 时间窗**：进入 OTA 模式后，**无连接约 5 分钟**、**总时长约 15 分钟**会自动复位退出。失败后重试必须**重新长按 B**。
+2. **升级期间没有 BTHome 数据**：OTA 模式下设备只广播 OTA 服务，燃气/电量停在最后一次的值，这是正常的。
+3. **不要调大分片**：128 是 ESPHome 代理的安全上限；240 会退化成代理长写并在中途断链。校验阶段必须保持 64。
+4. **电池**：新 CR2032 在 40 秒 OTA 负载下约 3.04 V，可用；旧电池（低于 ~2.9 V 静置）建议先换。`vdd_min_mv` 是最直接的判断依据（< 2.6 V 基本到极限）。
+5. **USB 烧录只擦代码区**：`firmware/Broadcaster_full.hex` 不含 DataFlash（`0x70000`），用 WCH-LinkUtility 时不要选 Chip Erase / 全片擦除，否则燃气值丢失。
+6. **广播判定以当前原始包为准**：HA 会把该地址的设备名缓存成 `GasMeter OTA`，普通 BTHome 广播的合并字段里也可能残留 `0xFFE0/0xFEE0` 或旧 `0xFCD2` 数据。0.7.1 起优先解析原始 BLE AD 结构：当前包有 `0xFEE0` 且没有 `0xFCD2` 才是 OTA；只有旧版 HA 不提供原始包时才使用合并字段兼容判断。
 
 ## 故障排查
 
