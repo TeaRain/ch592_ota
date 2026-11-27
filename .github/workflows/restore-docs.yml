@@ -1,0 +1,44 @@
+name: Restore GasPulse documentation
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: restore-gaspulse-docs
+  cancel-in-progress: false
+
+jobs:
+  restore-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore verified README and changelog
+        run: |
+          set -euo pipefail
+          base='https://gitee.com/zigbridge/gaspulse-ha/raw/master'
+          curl --fail --location --silent --show-error --retry 3 --retry-delay 5 \
+            "$base/README.md" --output README.md
+          curl --fail --location --silent --show-error --retry 3 --retry-delay 5 \
+            "$base/CHANGELOG.md" --output CHANGELOG.md
+          cat > /tmp/gaspulse-docs.sha256 <<'EOF'
+          3e929587bbc980e6f1c433790073af58d999c0fbe9cda38256fca80db2eb946d  README.md
+          c88c2960ffe6bb76a811350498b7802bf7f5f4f08f1226382ab0127c2dddec35  CHANGELOG.md
+          EOF
+          sha256sum -c /tmp/gaspulse-docs.sha256
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "Documentation already matches verified GasPulse 0.9.1"
+            exit 0
+          fi
+          git commit -m "restore: verified GasPulse 0.9.1 documentation" -m "Co-Authored-By: Claude Code <noreply@anthropic.com>"
+          git push origin master
