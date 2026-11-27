@@ -1,5 +1,5 @@
 {
-  "name": "CH592 OTA",
+  "name": "GasPulse 蓝牙燃气表",
   "content_in_root": false,
   "render_readme": true,
   "homeassistant": "2024.11.0"

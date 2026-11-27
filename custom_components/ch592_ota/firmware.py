@@ -31,11 +31,35 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import MANIFEST_UPDATE_INTERVAL_MINUTES
+from .const import (
+    DEFAULT_MANIFEST_URLS,
+    KNOWN_MANIFEST_URLS,
+    MANIFEST_UPDATE_INTERVAL_MINUTES,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 Manifest = dict[str, object]
+
+
+def resolve_manifest_urls(configured: str | None) -> list[str]:
+    """Expand managed built-in URLs while preserving custom endpoints."""
+    value = str(configured or "").strip()
+    if not value or value in KNOWN_MANIFEST_URLS:
+        return list(DEFAULT_MANIFEST_URLS)
+    return [value]
+
+
+def build_download_urls(
+    manifest_urls: list[str], selected_url: str, file_name: str
+) -> list[str]:
+    """Build same-image candidates, starting with the responding mirror."""
+    urls = [urljoin(selected_url, file_name)]
+    for manifest_url in manifest_urls:
+        candidate = urljoin(manifest_url, file_name)
+        if candidate not in urls:
+            urls.append(candidate)
+    return urls
 
 
 class FirmwareCloudCoordinator(DataUpdateCoordinator[Manifest]):
@@ -72,9 +96,10 @@ class FirmwareCloudCoordinator(DataUpdateCoordinator[Manifest]):
                 errors.append(f"{url}: 缺少 version 字段")
                 continue
             self.url = url
-            payload["download_url"] = urljoin(
-                url, str(payload.get("file") or "ch592_ota.bin")
+            payload["download_urls"] = build_download_urls(
+                self.urls, url, str(payload.get("file") or "ch592_ota.bin")
             )
+            payload["download_url"] = payload["download_urls"][0]
             _LOGGER.debug("固件清单: %s", payload)
             return payload
 
@@ -103,39 +128,51 @@ def is_newer(latest: str | None, installed: str | None) -> bool:
 async def async_download_firmware(
     hass: HomeAssistant, manifest: Manifest
 ) -> bytes:
-    """Download and verify the OTA image referenced by the manifest."""
-    url = str(manifest.get("download_url") or "")
-    if not url:
+    """Download one manifest's image, trying mirrors with identical metadata."""
+    configured_urls = manifest.get("download_urls")
+    if isinstance(configured_urls, (list, tuple)):
+        urls = list(
+            dict.fromkeys(
+                str(url) for url in configured_urls if str(url or "").strip()
+            )
+        )
+    else:
+        urls = []
+    if not urls:
+        url = str(manifest.get("download_url") or "")
+        urls = [url] if url else []
+    if not urls:
         raise HomeAssistantError("固件清单里没有可下载的地址")
 
-    try:
-        async with asyncio.timeout(120):
-            async with async_get_clientsession(hass).get(url) as resp:
-                if resp.status != 200:
-                    raise HomeAssistantError(f"下载固件失败: HTTP {resp.status}")
-                image = await resp.read()
-    except HomeAssistantError:
-        raise
-    except (TimeoutError, aiohttp.ClientError) as err:
-        raise HomeAssistantError(f"下载固件失败: {err}") from err
+    errors: list[str] = []
+    for url in urls:
+        try:
+            async with asyncio.timeout(120):
+                async with async_get_clientsession(hass).get(url) as resp:
+                    if resp.status != 200:
+                        raise HomeAssistantError(f"HTTP {resp.status}")
+                    image = await resp.read()
 
-    expected_size = manifest.get("size")
-    if expected_size is not None and len(image) != int(expected_size):
-        raise HomeAssistantError(
-            f"固件大小不符: 期望 {expected_size}, 实际 {len(image)}"
-        )
+            expected_size = manifest.get("size")
+            if expected_size is not None and len(image) != int(expected_size):
+                raise HomeAssistantError(
+                    f"固件大小不符: 期望 {expected_size}, 实际 {len(image)}"
+                )
 
-    crc32 = f"0x{zlib.crc32(image) & 0xFFFFFFFF:08X}"
-    expected_crc = manifest.get("crc32")
-    if expected_crc and str(expected_crc).upper() != crc32.upper():
-        raise HomeAssistantError(
-            f"固件 CRC32 不符: 清单 {expected_crc}, 实际 {crc32}"
-        )
+            crc32 = f"0x{zlib.crc32(image) & 0xFFFFFFFF:08X}"
+            expected_crc = manifest.get("crc32")
+            if expected_crc and str(expected_crc).upper() != crc32.upper():
+                raise HomeAssistantError(
+                    f"固件 CRC32 不符: 清单 {expected_crc}, 实际 {crc32}"
+                )
 
-    expected_sha = manifest.get("sha256")
-    if expected_sha:
-        actual_sha = hashlib.sha256(image).hexdigest()
-        if str(expected_sha).lower() != actual_sha:
-            raise HomeAssistantError("固件 SHA-256 不符")
+            expected_sha = manifest.get("sha256")
+            if expected_sha:
+                actual_sha = hashlib.sha256(image).hexdigest()
+                if str(expected_sha).lower() != actual_sha:
+                    raise HomeAssistantError("固件 SHA-256 不符")
+            return image
+        except (HomeAssistantError, TimeoutError, aiohttp.ClientError) as err:
+            errors.append(f"{url}: {err}")
 
-    return image
+    raise HomeAssistantError("所有固件下载地址均失败: " + "; ".join(errors))

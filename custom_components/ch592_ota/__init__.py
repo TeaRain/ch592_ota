@@ -24,7 +24,6 @@ from .const import (
     CONF_FIRMWARE,
     CONF_MANIFEST,
     CONF_VERSION,
-    DEFAULT_MANIFEST_URLS,
     DOMAIN,
     SERVICE_ABORT,
     SERVICE_CANCEL_GAS,
@@ -36,7 +35,7 @@ from .const import (
     THRESHOLD_MAX,
     THRESHOLD_MIN,
 )
-from .firmware import FirmwareCloudCoordinator
+from .firmware import FirmwareCloudCoordinator, resolve_manifest_urls
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -87,8 +86,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = Ch592OtaCoordinator(hass, entry)
     entry.runtime_data = coordinator
 
-    manifest_url = str(entry.options.get(CONF_MANIFEST, "") or "").strip()
-    manifest_urls = [manifest_url] if manifest_url else list(DEFAULT_MANIFEST_URLS)
+    manifest_urls = resolve_manifest_urls(entry.options.get(CONF_MANIFEST))
     coordinator.cloud = FirmwareCloudCoordinator(hass, manifest_urls, entry)
     # Refresh once, but don't block setup if the network is down.
     await coordinator.cloud.async_refresh()
@@ -105,7 +103,7 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
+    """Unload one CH592 device."""
     if not await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         return False
     coordinator = getattr(entry, "runtime_data", None)

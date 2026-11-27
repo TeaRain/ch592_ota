@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "CH592 OTA",
-        "description": "Configure the CH592 gas-meter broadcaster. Put the device into OTA mode by holding button B for 3 seconds before flashing.",
+        "title": "GasPulse 蓝牙燃气表",
+        "description": "Configure the GasPulse BLE gas meter. Put the device into OTA mode by holding button B for 3 seconds before flashing.",
         "data": {
           "address": "Bluetooth address",
           "name": "Device name",
@@ -21,10 +21,10 @@
   "options": {
     "step": {
       "init": {
-        "title": "CH592 OTA options",
+        "title": "GasPulse 蓝牙燃气表选项",
         "data": {
           "firmware": "Firmware path (under /config)",
-          "manifest_url": "Firmware manifest URL (leave empty for Gitee -> GitHub auto)",
+          "manifest_url": "GasPulse firmware manifest URL (empty or built-in = managed old/new mirror fallback; custom URLs stay unchanged)",
           "auto_install_on_ota_mode": "Install automatically when the device enters OTA mode"
         }
       }

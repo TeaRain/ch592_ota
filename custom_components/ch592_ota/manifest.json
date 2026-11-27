@@ -1,17 +1,17 @@
 {
   "domain": "ch592_ota",
-  "name": "CH592 OTA",
+  "name": "GasPulse 蓝牙燃气表",
   "codeowners": [],
   "config_flow": true,
   "dependencies": [
     "bluetooth",
     "bluetooth_adapters"
   ],
-  "documentation": "https://gitee.com/zigbridge/ch592_ota",
+  "documentation": "https://github.com/TeaRain/ch592_ota",
   "iot_class": "local_push",
-  "issue_tracker": "https://gitee.com/zigbridge/ch592_ota/issues",
+  "issue_tracker": "https://github.com/TeaRain/ch592_ota/issues",
   "requirements": [
     "bleak-retry-connector>=3.0.0"
   ],
-  "version": "0.8.4"
+  "version": "0.9.0"
 }

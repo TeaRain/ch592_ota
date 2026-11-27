@@ -2,8 +2,8 @@
   "config": {
     "step": {
       "user": {
-        "title": "CH592 OTA",
-        "description": "配置 CH592 燃气表广播器。升级前请长按 B 键 3 秒，让设备进入 OTA 模式。",
+        "title": "GasPulse 蓝牙燃气表",
+        "description": "配置 GasPulse 蓝牙燃气表。升级前请长按 B 键 3 秒，让设备进入 OTA 模式。",
         "data": {
           "address": "蓝牙地址",
           "name": "设备名称",
@@ -21,10 +21,10 @@
   "options": {
     "step": {
       "init": {
-        "title": "CH592 OTA 选项",
+        "title": "GasPulse 蓝牙燃气表选项",
         "data": {
           "firmware": "固件路径（位于 /config 下）",
-          "manifest_url": "固件清单 URL（留空 = Gitee → GitHub 自动检查）",
+          "manifest_url": "GasPulse 固件清单 URL（留空或项目内置地址 = 新旧镜像自动回退；其他自定义地址保持不变）",
           "auto_install_on_ota_mode": "设备进入 OTA 模式时自动升级（长按 B 即可）"
         }
       }
