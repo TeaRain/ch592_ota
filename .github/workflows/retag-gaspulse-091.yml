@@ -1,0 +1,61 @@
+name: Retag GasPulse 0.9.1
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: retag-gaspulse-091
+  cancel-in-progress: false
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Replace incorrect 0.9.1 release and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          target='7559eb1bed2bf9950ee8b1fc2e9b03502eff926d'
+
+          if gh release view v0.9.1 >/dev/null 2>&1; then
+            gh release delete v0.9.1 --yes --cleanup-tag
+          fi
+
+          git push --delete origin v0.9.1 || true
+          git tag -d v0.9.1 || true
+          git fetch origin --prune --tags
+
+          git tag -a -m 'GasPulse integration 0.9.1' v0.9.1 "$target"
+          git push origin v0.9.1
+
+          cat > /tmp/gaspulse-091-release-notes.md <<'EOF'
+          GasPulse 0.9.1 新地址优先版。
+
+          - GitHub 已原生改名为 `TeaRain/gaspulse-ha` 与 `TeaRain/gaspulse-firmware`，旧 GitHub 地址保留平台重定向。
+          - 固件清单默认顺序：新 GitHub → 新 Gitee → 旧 Gitee → 旧 GitHub。
+          - Gitee 仅作代码备份和固件 raw 回退，不作为 HACS 来源；HACS 自定义仓库只填写 GitHub。
+          - `ch592_ota` domain、安装目录、服务、实体 ID、默认固件文件名和 BLE/OTA 协议保持不变。
+          - BIN 下载候选复用同一份 manifest 的 version、size、CRC32 和 SHA-256，逐镜像独立校验，失败才安全回退。
+          - 验证：`project_verify.py all` 16/16；HA 96、固件 23、workspace 35；HACS ZIP 23 成员，SHA-256 `9b4a7b1e4944829373032fbcedcd3d1dde23558f44b2a340031ec200ea0fb79e`。
+          EOF
+
+          if ! gh release view v0.9.1 >/dev/null 2>&1; then
+            gh release create v0.9.1 \
+              --target "$target" \
+              --title 'GasPulse 蓝牙燃气表 0.9.1' \
+              --notes-file /tmp/gaspulse-091-release-notes.md
+          fi
+
+          gh release edit v0.9.1 \
+            --title 'GasPulse 蓝牙燃气表 0.9.1' \
+            --notes-file /tmp/gaspulse-091-release-notes.md
