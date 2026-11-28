@@ -1,7 +1,0 @@
-== start 2026-11-28T00:21:55Z ==
-== gh release edit ==
-https://github.com/TeaRain/gaspulse-ha/releases/tag/v0.9.1
-edit_exit=0
-== gh release view ==
-{"isDraft":false,"isPrerelease":false,"name":"GasPulse 蓝牙燃气表 0.9.1","tagName":"v0.9.1"}
-== end ==
