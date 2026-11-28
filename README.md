@@ -14,11 +14,11 @@ Image A；任何一步失败都会继续跑旧固件。版本号通过 BTHome v2
 
 ## 当前版本与历史实测
 
-> 当前为 **0.9.1 新地址优先版**：GitHub 已改用 `gaspulse-ha` / `gaspulse-firmware`，旧地址保留重定向和固件回退。HA domain、集成目录、服务、实体 ID 与 OTA 协议均不变。
+> 当前为 **0.9.2 维护版**：GitHub 已改用 `gaspulse-ha` / `gaspulse-firmware`，旧地址保留重定向和固件回退。HA domain、集成目录、服务、实体 ID 与 OTA 协议均不变。
 
 | 项目 | 值 |
 |------|-----|
-| 集成版本 | **0.9.1** |
+| 集成版本 | **0.9.2** |
 | 固件版本 | **1.6.2** |
 | 一次升级耗时 | 免按键新增普通窗口等待；上传仍用协议 8 单次 CRC32，实际总耗时尚待实机记录 |
 | 供电实测 | CR2032 新电池，OTA 负载下 **3.04 V**，全程无下探 |
@@ -85,16 +85,17 @@ HACS 只识别 GitHub 仓库：
 ```bash
 cd /config
 rm -rf /tmp/ch592_ota_repo
-git clone --depth 1 https://gitee.com/zigbridge/ch592_ota.git /tmp/ch592_ota_repo
-# 旧 Gitee HA 备份当前冻结于 0.9.0；新 Gitee 备份公开后改用 zigbridge/gaspulse-ha
+git clone --depth 1 https://gitee.com/zigbridge/gaspulse-ha.git /tmp/ch592_ota_repo
+# 旧 Gitee 备份 zigbridge/ch592_ota 冻结于 0.9.0，仅作历史回退，不要用于新装
 cp -rf /tmp/ch592_ota_repo/custom_components/ch592_ota /config/custom_components/
 rm -rf /tmp/ch592_ota_repo
 ```
 
 ### 方式三：下载 ZIP
 
-- Gitee（旧备份，当前冻结于 0.9.0；新备份公开后改用 `gaspulse-ha`）：`https://gitee.com/zigbridge/ch592_ota/repository/archive/master.zip`
+- Gitee（新备份，公开）：`https://gitee.com/zigbridge/gaspulse-ha/repository/archive/master.zip`
 - GitHub：`https://github.com/TeaRain/gaspulse-ha/archive/refs/heads/master.zip`
+- 旧 Gitee 备份 `zigbridge/ch592_ota` 冻结于 0.9.0，仅兼容期回退用，不用于新装。
 
 解压后把 `custom_components/ch592_ota` 复制到 `/config/custom_components/`。
 
@@ -176,7 +177,7 @@ waiting_ota_ad`。错过短窗会等后续广播重试，整个唤醒等待上�
 3. 之后的日常升级即可直接点安装，不再按 B。
 
 如果已是最新版本，进入 OTA 模式不会做任何升级，设备约 5 分钟后自动退出。
-自动升级开关位于 **设置 → 设备与服务 → CH592 OTA → 配置 → 设备进入 OTA 模式时自动
+自动升级开关位于 **设置 → 设备与服务 → GasPulse 蓝牙燃气表 → 配置 → 设备进入 OTA 模式时自动
 升级**，默认关闭。
 
 > HA 重启后如果设备还停留在此前的 OTA 模式里，集成不会仅凭遗留广播自动升级；
@@ -245,7 +246,7 @@ data:
    - 不在 OTA 模式 → 持久保存为「等待 OTA 写入」，可按 B 立即触发，也可等待
      每 3 天的定时 OTA 窗口；HA 重启不会清除待写值；
    - 阈值与固件升级同时存在时，**先写阈值，成功后继续同一窗口的固件升级**；
-     写入失败保留待写值和错误，本次窗口不继续升级；
+   写入失败保留待写值和错误，本次窗口不继续升级；
 3. 取消：`button.*_cancel_pending_writes` 或 `ch592_ota.cancel_threshold`。
 
 0.7.6 起删除旧 `button.*_write_pulse_threshold`；0.7.7 起待写值不再 15 分钟过期。
@@ -285,7 +286,7 @@ data:
 | `sensor.<device>_ota_progress` | 上传进度 0–100 % |
 | `sensor.<device>_firmware_version` | 设备通过 BTHome `0x53` 报告的固件版本 |
 | `button.<device>_abort_ota` | 取消升级 |
-| `button.<device>_check_for_updates` | 立即检查固件清单 |
+| `button.<device>_check_for_updates` | 立即检查固件更新 |
 | `number.<device>_gas_target` | 机械表实际读数（提交即校准，只写 HA offset，无需按 B） |
 | `sensor.<device>_current_threshold` | 当前采样阈值（P/N按键调整），固件 ≥1.4.9 实时广播 |
 | `number.<device>_pulse_threshold` | 采样阈值（提交后写入或持久等待下次 OTA；按 B 或最长等 3 天） |
@@ -367,7 +368,7 @@ python tools/publish_firmware.py --repo . --notes "改了什么" --push
 ## 版本要点
 
 | 版本 | 关键改动 |
-|------|---------|
+|------|--------|
 | 0.1.x | 首个可用版本；分片 240 → 64；原生 update 实体 |
 | 0.2.x | 固件清单自动检查、立即检查按钮 |
 | 0.3.x | 长按 B 自动升级；OTA 广播判定修正；进度卡 98% 修正 |
@@ -402,3 +403,15 @@ python tools/publish_firmware.py --repo . --notes "改了什么" --push
 改为追加式日志并逐条读回校验，掉电最多丢一条记录；1.4.3 修正保存失败后的
 重试计时（按 300 ms 采样节拍，约 15 秒重试）。完整记录见
 [CHANGELOG.md](CHANGELOG.md)。
+
+## 开发与测试
+
+- 常规单测无需 HA 环境：仓库根目录 `python3 -m unittest discover -s tests`，
+  只用标准库和手工 stub，`tools/project_verify.py all` 的默认门禁同样零外部依赖。
+- 真实 HTTP 故障回退（真 socket、真 aiohttp、loopback 服务器，覆盖清单 404/坏
+  JSON/缺字段、BIN 404/大小不符/CRC+SHA 不符/全候选损坏、畸形 size 拦截和
+  coordinator→下载全链路）在工程根目录运行：
+  `python3 tools/run_http_fault_injection.py`。首次运行自动创建 `.venv-http/`
+  并安装钉版 aiohttp；该模块刻意不命名为 `test_*.py`，系统 Python 缺 aiohttp
+  时自动 skip，不影响默认门禁。加 `--online` 会额外对四个线上固件镜像做只读
+  校验（发布新固件版本后需同步更新脚本内钉死的元数据）。
