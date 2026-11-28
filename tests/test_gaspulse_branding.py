@@ -28,7 +28,7 @@ class GasPulseBrandingTests(unittest.TestCase):
         hacs = _json("hacs.json")
         self.assertEqual(manifest["name"], "GasPulse 蓝牙燃气表")
         self.assertEqual(hacs["name"], "GasPulse 蓝牙燃气表")
-        self.assertEqual(manifest["version"], "0.9.1")
+        self.assertEqual(manifest["version"], "0.9.2")
         self.assertEqual(manifest["domain"], "ch592_ota")
 
     def test_internal_identifiers_remain_compatible(self):
@@ -47,7 +47,8 @@ class GasPulseBrandingTests(unittest.TestCase):
             strings["options"]["step"]["init"]["title"], "GasPulse 蓝牙燃气表选项"
         )
         self.assertEqual(
-            english["config"]["step"]["user"]["title"], "GasPulse BLE Gas Meter"
+            english["config"]["step"]["user"]["title"],
+            "GasPulse BLE Gas Meter",
         )
         self.assertEqual(
             english["options"]["step"]["init"]["title"],

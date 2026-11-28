@@ -144,6 +144,16 @@ async def async_download_firmware(
     if not urls:
         raise HomeAssistantError("固件清单里没有可下载的地址")
 
+    expected_size_raw = manifest.get("size")
+    expected_size: int | None = None
+    if expected_size_raw is not None:
+        try:
+            expected_size = int(expected_size_raw)
+        except (TypeError, ValueError) as err:
+            raise HomeAssistantError(
+                f"固件清单 size 字段无效: {expected_size_raw!r}"
+            ) from err
+
     errors: list[str] = []
     for url in urls:
         try:
@@ -153,8 +163,7 @@ async def async_download_firmware(
                         raise HomeAssistantError(f"HTTP {resp.status}")
                     image = await resp.read()
 
-            expected_size = manifest.get("size")
-            if expected_size is not None and len(image) != int(expected_size):
+            if expected_size is not None and len(image) != expected_size:
                 raise HomeAssistantError(
                     f"固件大小不符: 期望 {expected_size}, 实际 {len(image)}"
                 )
