@@ -1,62 +1,11 @@
-name: Diagnose 0.9.1 release failure
+name: Disabled temp workflow
 
+# Neutralized: no longer triggers on push. Safe to delete.
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
 
-permissions:
-  contents: write
-
-concurrency:
-  group: diagnose-gaspulse-091
-  cancel-in-progress: false
-
 jobs:
-  diagnose:
+  noop:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Collect permission diagnostics and attempt release creation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set +e
-          mkdir -p .github/diagnostics
-          log=.github/diagnostics/retag-diagnostic.log
-          {
-            echo "== gh version =="
-            gh --version
-            echo "== gh auth status =="
-            gh auth status
-            echo "== repo viewer permission =="
-            gh repo view TeaRain/gaspulse-ha --json nameWithOwner,defaultBranchRef,viewerPermission
-            echo "== repository rulesets =="
-            gh api repos/TeaRain/gaspulse-ha/rulesets 2>&1 | head -c 4000
-            echo
-            echo "== classic tag protection =="
-            gh api repos/TeaRain/gaspulse-ha/tags/protection 2>&1 | head -c 2000
-            echo
-            echo "== matching refs tags/v0.9 =="
-            gh api 'repos/TeaRain/gaspulse-ha/git/matching-refs/tags/v0.9' 2>&1 | head -c 4000
-            echo
-            echo "== attempt gh release create v0.9.1 =="
-            gh release create v0.9.1 \
-              --target '7559eb1bed2bf9950ee8b1fc2e9b03502eff926d' \
-              --title 'GasPulse 蓝牙燃气表 0.9.1' \
-              --notes 'diagnostic attempt' 2>&1
-            echo "release_create_exit=$?"
-            echo "== state after attempt =="
-            gh release view v0.9.1 2>&1 | head -c 2000
-            echo
-            gh api repos/TeaRain/gaspulse-ha/git/ref/tags/v0.9.1 2>&1 | head -c 1000
-          } > "$log" 2>&1
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$log"
-          git commit -m "ci: capture 0.9.1 release diagnostics" -m "Co-Authored-By: Claude Code <noreply@anthropic.com>"
-          git push origin master
+      - run: echo disabled
