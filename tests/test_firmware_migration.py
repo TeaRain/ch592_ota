@@ -265,6 +265,18 @@ class FirmwareMigrationTests(unittest.TestCase):
         self.assertEqual(result, image)
         self.assertEqual(session.requests, [first, second])
 
+    def test_download_rejects_non_numeric_manifest_size_before_http(self):
+        image = b"valid-gaspulse-image"
+        url = "https://one.example/ch592_ota.bin"
+        manifest = _manifest(image, [url])
+        manifest["size"] = "not-a-number"
+        session = FakeSession({url: FakeResponse(body=image)})
+        with patch.object(FIRMWARE, "async_get_clientsession", return_value=session):
+            with self.assertRaises(FIRMWARE.HomeAssistantError) as caught:
+                asyncio.run(FIRMWARE.async_download_firmware(object(), manifest))
+        self.assertIn("size", str(caught.exception))
+        self.assertEqual(session.requests, [])
+
     def test_download_never_accepts_different_metadata(self):
         image = b"valid-gaspulse-image"
         first = "https://one.example/ch592_ota.bin"
@@ -280,6 +292,109 @@ class FirmwareMigrationTests(unittest.TestCase):
                     )
                 )
         self.assertEqual(session.requests, [first, second])
+
+    def test_all_candidates_rejected_by_hash_raise_aggregated_error(self):
+        image = b"valid-gaspulse-image"
+        corrupt = b"VALID-GASPULSE-IMAGE"
+        self.assertEqual(len(corrupt), len(image))
+        first = "https://one.example/ch592_ota.bin"
+        second = "https://two.example/ch592_ota.bin"
+        session = FakeSession(
+            {first: FakeResponse(body=corrupt), second: FakeResponse(body=corrupt)}
+        )
+        manifest = _manifest(image, [first, second])
+        with patch.object(FIRMWARE, "async_get_clientsession", return_value=session):
+            with self.assertRaises(FIRMWARE.HomeAssistantError) as caught:
+                asyncio.run(
+                    FIRMWARE.async_download_firmware(object(), manifest)
+                )
+        self.assertEqual(session.requests, [first, second])
+        message = str(caught.exception)
+        self.assertIn(first, message)
+        self.assertIn(second, message)
+
+    def _new_cloud_coordinator(self):
+        coordinator = object.__new__(FIRMWARE.FirmwareCloudCoordinator)
+        coordinator.hass = object()
+        coordinator.urls = MANIFEST_URLS
+        coordinator.url = MANIFEST_URLS[0]
+        return coordinator
+
+    def test_cloud_coordinator_falls_back_after_timeout(self):
+        coordinator = self._new_cloud_coordinator()
+        session = FakeSession(
+            {
+                MANIFEST_URLS[0]: TimeoutError(),
+                MANIFEST_URLS[1]: FakeResponse(
+                    payload={"version": "1.6.2", "file": "ch592_ota.bin"}
+                ),
+            }
+        )
+        with patch.object(FIRMWARE, "async_get_clientsession", return_value=session):
+            payload = asyncio.run(coordinator._async_update_data())
+        self.assertEqual(payload["version"], "1.6.2")
+        self.assertEqual(coordinator.url, MANIFEST_URLS[1])
+        self.assertEqual(session.requests, [MANIFEST_URLS[0], MANIFEST_URLS[1]])
+
+    def test_cloud_coordinator_falls_back_after_bad_json(self):
+        coordinator = self._new_cloud_coordinator()
+        session = FakeSession(
+            {
+                MANIFEST_URLS[0]: FakeResponse(payload=ValueError("bad json")),
+                MANIFEST_URLS[1]: FakeResponse(payload={"version": "1.6.2"}),
+            }
+        )
+        with patch.object(FIRMWARE, "async_get_clientsession", return_value=session):
+            payload = asyncio.run(coordinator._async_update_data())
+        self.assertEqual(payload["version"], "1.6.2")
+        self.assertEqual(coordinator.url, MANIFEST_URLS[1])
+        self.assertEqual(session.requests, [MANIFEST_URLS[0], MANIFEST_URLS[1]])
+
+    def test_cloud_coordinator_all_urls_fail_raises_update_failed(self):
+        coordinator = self._new_cloud_coordinator()
+        session = FakeSession(
+            {
+                MANIFEST_URLS[0]: TimeoutError(),
+                MANIFEST_URLS[1]: FakeResponse(payload=ValueError("bad json")),
+            }
+        )
+        with patch.object(FIRMWARE, "async_get_clientsession", return_value=session):
+            with self.assertRaises(FIRMWARE.UpdateFailed) as caught:
+                asyncio.run(coordinator._async_update_data())
+        message = str(caught.exception)
+        self.assertIn(MANIFEST_URLS[0], message)
+        self.assertIn(MANIFEST_URLS[1], message)
+        self.assertEqual(session.requests, MANIFEST_URLS)
+
+    def test_setup_does_not_rewrite_manifest_option_in_config_entry(self):
+        init_source = (REPO / "custom_components/ch592_ota/__init__.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("async_update_entry", init_source)
+        custom = "https://example.invalid/custom-manifest.json"
+
+        class FakeEntry:
+            def __init__(self, manifest_option):
+                self.options = (
+                    {CONST.CONF_MANIFEST: manifest_option}
+                    if manifest_option is not None
+                    else {}
+                )
+
+        for entry, expected in [
+            (FakeEntry(None), MANIFEST_URLS),
+            (FakeEntry(""), MANIFEST_URLS),
+            (FakeEntry(OLD_GITEE), MANIFEST_URLS),
+            (FakeEntry(custom), [custom]),
+        ]:
+            with self.subTest(option=entry.options):
+                stored = dict(entry.options)
+                # Mirror custom_components/ch592_ota/__init__.py setup entry line.
+                urls = FIRMWARE.resolve_manifest_urls(
+                    entry.options.get(CONST.CONF_MANIFEST)
+                )
+                self.assertEqual(urls, expected)
+                self.assertEqual(entry.options, stored)
 
 
 if __name__ == "__main__":
