@@ -1,0 +1,34 @@
+name: Sync from Gitee canonical
+
+on:
+  push:
+    branches: [master]
+    paths: ['.github/workflows/sync-gitee.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sync tracked files from canonical Gitee master
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          base="https://gitee.com/zigbridge/gaspulse-ha/raw/master"
+          while IFS= read -r file; do
+            mkdir -p "$(dirname "$file")"
+            curl -fsSL --retry 3 "$base/$file" -o "$file"
+          done < <(git ls-files | grep -v '^\.github/workflows/sync-gitee\.yml$')
+          git add -A
+          if git diff --cached --quiet; then
+            echo "nothing to sync"
+          else
+            git commit -m "chore: sync byte-exact files from canonical Gitee master"
+            git push
+          fi
