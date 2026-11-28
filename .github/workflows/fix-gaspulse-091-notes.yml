@@ -12,11 +12,15 @@ jobs:
   notes:
     runs-on: ubuntu-latest
     steps:
-      - name: Align release notes only (no git operations)
+      - uses: actions/checkout@v4
+
+      - name: Align release notes and record outcome
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
+          set +e
+          mkdir -p .github/diagnostics
+          log=.github/diagnostics/notes-result.log
           cat > /tmp/gaspulse-091-release-notes.md <<'EOF'
           GasPulse 0.9.1 新地址优先版。
 
@@ -27,7 +31,20 @@ jobs:
           - BIN 下载候选复用同一份 manifest 的 version、size、CRC32 和 SHA-256，逐镜像独立校验，失败才安全回退。
           - 验证：`project_verify.py all` 16/16；HA 96、固件 23、workspace 35；HACS ZIP 23 成员，SHA-256 `9b4a7b1e4944829373032fbcedcd3d1dde23558f44b2a340031ec200ea0fb79e`。
           EOF
-          gh release edit v0.9.1 \
-            --title 'GasPulse 蓝牙燃气表 0.9.1' \
-            --notes-file /tmp/gaspulse-091-release-notes.md
-          gh release view v0.9.1 --json tagName,name,isDraft,isPrerelease
+          {
+            echo "== start $(date -u +%FT%TZ) =="
+            echo "== gh release edit =="
+            gh release edit v0.9.1 \
+              --title 'GasPulse 蓝牙燃气表 0.9.1' \
+              --notes-file /tmp/gaspulse-091-release-notes.md
+            echo "edit_exit=$?"
+            echo "== gh release view =="
+            gh release view v0.9.1 --json tagName,name,isDraft,isPrerelease
+            echo "== end =="
+          } > "$log" 2>&1
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$log"
+          git commit -m "ci: record 0.9.1 release notes result" -m "Co-Authored-By: Claude Code <noreply@anthropic.com>"
+          git push origin master
