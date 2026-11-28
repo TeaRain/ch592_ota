@@ -246,7 +246,7 @@ data:
    - 不在 OTA 模式 → 持久保存为「等待 OTA 写入」，可按 B 立即触发，也可等待
      每 3 天的定时 OTA 窗口；HA 重启不会清除待写值；
    - 阈值与固件升级同时存在时，**先写阈值，成功后继续同一窗口的固件升级**；
-     写入失败保留待写值和错误，本次窗口不继续固件升级；
+     写入失败保留待写值和错误，本次窗口不继续升级；
 3. 取消：`button.*_cancel_pending_writes` 或 `ch592_ota.cancel_threshold`。
 
 0.7.6 起删除旧 `button.*_write_pulse_threshold`；0.7.7 起待写值不再 15 分钟过期。
@@ -286,7 +286,7 @@ data:
 | `sensor.<device>_ota_progress` | 上传进度 0–100 % |
 | `sensor.<device>_firmware_version` | 设备通过 BTHome `0x53` 报告的固件版本 |
 | `button.<device>_abort_ota` | 取消升级 |
-| `button.<device>_check_for_updates` | 立即检查固件更新 |
+| `button.<device>_check_for_updates` | 立即检查固件清单 |
 | `number.<device>_gas_target` | 机械表实际读数（提交即校准，只写 HA offset，无需按 B） |
 | `sensor.<device>_current_threshold` | 当前采样阈值（P/N按键调整），固件 ≥1.4.9 实时广播 |
 | `number.<device>_pulse_threshold` | 采样阈值（提交后写入或持久等待下次 OTA；按 B 或最长等 3 天） |
